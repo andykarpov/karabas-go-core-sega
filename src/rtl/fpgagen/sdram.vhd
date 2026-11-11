@@ -1,7 +1,7 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 
-package sdram is
+package sdram_pkg is -- karabas: XST confuses a VHDL package with the Verilog module of the same name
 component sdram
 	port (
 

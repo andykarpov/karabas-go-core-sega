@@ -1,0 +1,24 @@
+{
+    "id": "sega",
+    "name": "Sega Mega Drive",
+    "build": "00000000",
+    "visible": true,
+    "type": "fileloader",
+    "dir": "sega",
+    "filename": "",
+    "extensions": ".bin,.gen,.md",
+    "order": 255,
+    "eeprom_bank": 255,
+    "roms": [],
+    "boards": {
+        "go": {"bitstream": "karabas_go.bin"},
+        "mini": {"bitstream": "karabas_mini.bin"},
+        "minig": {"bitstream": "karabas_minig.bin"}
+    },
+    "osd": [
+    {"type": "S", "name": "Region", "options": ["Auto", "JP", "US", "EU"], "default": 0, "hotkey": "Menu+R"},
+    {"type": "S", "name": "Pad", "options": ["6 button", "3 button"], "default": 0, "hotkey": "Menu+P"},
+    {"type": "S", "name": "Swap joysticks", "options": ["Off", "On"], "default": 0, "hotkey": "Menu+J"},
+    {"type": "T", "name": "Reset", "hotkey": "F12"}
+    ]
+}

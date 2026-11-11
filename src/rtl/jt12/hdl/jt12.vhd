@@ -1,7 +1,7 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 
-package jt12 is 
+package jt12_pkg is -- karabas: XST confuses a VHDL package with the Verilog module of the same name
 
 component jt12
 port

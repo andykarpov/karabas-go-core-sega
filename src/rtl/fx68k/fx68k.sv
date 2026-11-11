@@ -2569,7 +2569,7 @@ endmodule
 module uRom( input clk, input [UADDR_WIDTH-1:0] microAddr, output logic [UROM_WIDTH-1:0] microOutput);
 	reg [UROM_WIDTH-1:0] uRam[ UROM_DEPTH];		
 	initial begin
-		$readmemb("microrom.mem", uRam);
+		$readmemb("rtl/fx68k/microrom.mem", uRam);	// karabas: path from src/, where XST runs
 	end
 	
 	always_ff @( posedge clk) 
@@ -2580,7 +2580,7 @@ endmodule
 module nanoRom( input clk, input [NADDR_WIDTH-1:0] nanoAddr, output logic [NANO_WIDTH-1:0] nanoOutput);
 	reg [NANO_WIDTH-1:0] nRam[ NANO_DEPTH];		
 	initial begin
-		$readmemb("nanorom.mem", nRam);
+		$readmemb("rtl/fx68k/nanorom.mem", nRam);	// karabas: path from src/, where XST runs
 	end
 	
 	always_ff @( posedge clk) 

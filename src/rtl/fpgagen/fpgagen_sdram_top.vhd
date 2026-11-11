@@ -38,11 +38,12 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_ARITH.ALL;
 use IEEE.STD_LOGIC_UNSIGNED.ALL;
-use work.sdram.all;
+use work.sdram_pkg.all; -- karabas: package renamed
 
 entity fpgagen_sdram_top is
 generic (
-  INTERNAL_VRAM : boolean := false
+  INTERNAL_VRAM : boolean := false; -- karabas: must stay false, the internal VRAM is left out
+  USE_SVP       : boolean := true -- karabas: false leaves the SVP (Virtua Racing) out, ~2.3k LUT
 );
 port(
 	reset_n      : in std_logic;
@@ -213,30 +214,12 @@ begin
 -- -----------------------------------------------------------------------
 -- Internal VRAM
 -- -----------------------------------------------------------------------
-vram_byteena <= not vram_u_n & not vram_l_n;
-vram : entity work.vram
-port map(
-	clock => MCLK,
-
-	address_a => vram_a,
-	byteena_a => vram_byteena,
-	data_a => vram_d,
-	wren_a => vram_we_int,
-	q_a => vram_q_int,
-
-	address_b => vram32_a(15 downto 2),
-	data_b => (others => '0'),
-	q_b => vram32_q_int
-);
-
-process(MCLK)
-begin
-	if rising_edge(MCLK) then
-			vram_ack_int <= vram_ack_int(0) & vram_req;
-			vram32_ack_int <= vram32_ack_int(0) & vram32_req;
-			vram_we_int <= (vram_req xor vram_ack) and vram_we;
-	end if;
-end process;
+-- karabas: the internal VRAM (vram.vhd, an altsyncram, which XST does not have and parses even in a
+-- false generate) is left out: VRAM is in the SDRAM (INTERNAL_VRAM false, the MiST default)
+vram_q_int     <= (others => '0');
+vram32_q_int   <= (others => '0');
+vram_ack_int   <= (others => '0');
+vram32_ack_int <= (others => '0');
 
 vram_req_ext <= '0' when INTERNAL_VRAM else vram_req;
 vram32_req_ext <= '0' when INTERNAL_VRAM else vram32_req;
@@ -351,7 +334,8 @@ port map (
 -- -----------------------------------------------------------------------
 -- -----------------------------------------------------------------------
 -- -----------------------------------------------------------------------
-fpgagen : work.fpgagen_top
+fpgagen : entity work.fpgagen_top -- karabas: XST needs the entity keyword
+generic map (USE_SVP => USE_SVP) -- karabas
 port map (
 	reset_n      => reset_n,
 	MCLK         => MCLK,     --  54MHz

@@ -39,10 +39,13 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.STD_LOGIC_ARITH.ALL;
 use IEEE.STD_LOGIC_UNSIGNED.ALL;
 use IEEE.STD_LOGIC_TEXTIO.all;
-use work.jt12.all;
-use work.jt89.all;
+use work.jt12_pkg.all; -- karabas: package renamed
+use work.jt89_pkg.all; -- karabas: package renamed
 
 entity fpgagen_top is
+generic (
+	USE_SVP        : boolean := true -- karabas: false leaves the SVP (Virtua Racing) out, ~2.3k LUT
+);
 port(
 	reset_n        : in std_logic;
 	MCLK           : in std_logic;  -- 54MHz
@@ -174,6 +177,9 @@ port(
 end entity;
 
 architecture rtl of fpgagen_top is
+
+-- karabas: svp_en of the cartridge, forced 0 without the SVP (all its bus logic is then constant)
+signal svp_on : std_logic;
 
 -- "FLASH"
 type fc_t is ( FC_IDLE, 
@@ -830,19 +836,34 @@ port map(
 );
 
 -- SVP at A15000-A1500F
-FX68_SVP_SEL <= '1' when svp_en = '1' and FX68_SEL = '1' and FX68_A(23 downto 4) = x"A1500" else '0';
+FX68_SVP_SEL <= '1' when svp_on = '1' and FX68_SEL = '1' and FX68_A(23 downto 4) = x"A1500" else '0';
 T80_SVP_SEL <= '1' when BAR(23 downto 15) = x"A1"&'0' and T80_A(15 downto 4) = x"500" and T80_MREQ_N = '0' and (T80_RD_N = '0' or T80_WR_N = '0') else '0';
 SVP_SEL <= T80_SVP_SEL or FX68_SVP_SEL;
 SVP_RNW <= T80_WR_N when T80_SVP_SEL = '1' else FX68_RNW when FX68_SVP_SEL = '1' else '1';
 SVP_A <= T80_A(3 downto 1) when T80_SVP_SEL = '1' else FX68_A(3 downto 1);
 SVP_DI <= T80_DO & T80_DO when T80_SVP_SEL = '1' else FX68_DO;
 
-SVP : work.SVP
+svp_on <= svp_en when USE_SVP else '0'; -- karabas
+
+-- karabas: the SVP only with USE_SVP; without it its outputs are idle
+svp_off : if not USE_SVP generate
+SVP_DO       <= (others => '0');
+SVP_DTACK_N  <= '1';
+svp_rom_a    <= (others => '0');
+svp_rom_req  <= '0';
+svp_ram1_a   <= (others => '0');
+svp_ram1_d   <= (others => '0');
+svp_ram1_we  <= '0';
+svp_ram1_req <= '0';
+end generate;
+
+svp_gen : if USE_SVP generate
+SVP : entity work.SVP -- karabas: XST needs the entity keyword
 port map (
 	CLK         => MCLK,
 	CE          => SVP_CLKEN,
 	RST_N       => MRST_N,
-	ENABLE      => svp_en,
+	ENABLE      => svp_on,
 
 	BUS_A       => SVP_A,
 	BUS_DO      => SVP_DO,
@@ -863,6 +884,7 @@ port map (
 	DRAM_REQ    => svp_ram1_req,
 	DRAM_ACK    => svp_ram1_ack
 );
+end generate; -- karabas
 
 -- #############################################################################
 -- #############################################################################
@@ -1531,6 +1553,7 @@ begin
 					SSF2_MAP(41 downto 36) <= FX68_DO(5 downto 0);
 				when "111" =>
 					SSF2_MAP(47 downto 42) <= FX68_DO(5 downto 0);
+				when others => null; -- karabas: XST (HDLCompiler:299) wants others for std_logic
 				end case;
 			else
 				-- use for SRAM paging
@@ -1602,7 +1625,7 @@ begin
 					FX68_FLASH_ACK <= '1';
 					FC <= FC_FX68_RD;
 				elsif DMA_FLASH_SEL = '1' and DMA_FLASH_DTACK_N = '1' then
-					if svp_en = '1' then
+					if svp_on = '1' then
 						dma_a := VBUS_ADDR - 1;
 					else
 						dma_a := VBUS_ADDR;
@@ -1777,7 +1800,7 @@ end process;
 
 -- SRAM at 0x200000 - 20FFFF
 -- EEPROM at 0x200000
-SRAM_EN <= (SRAM_EN_AUTO or SRAM_EN_PAGEIN) and not svp_en;
+SRAM_EN <= (SRAM_EN_AUTO or SRAM_EN_PAGEIN) and not svp_on;
 
 FX68_SRAM_SEL <= '1' when SRAM_EN = '1' and FX68_AS_N = '0' and FX68_A(23 downto 16) = x"20" and FX68_EEPROM_SEL = '0' else '0';
 FX68_EEPROM_SEL <= '1' when EEPROM_EN = '1' and FX68_SEL = '1' and FX68_A(23 downto 4) = x"20000" and FX68_A(3 downto 1) = "000" else '0';
@@ -1891,8 +1914,8 @@ end process;
 -- 300000-37FFFF - 128K mirrored x4
 -- 390000-39FFFF - cell arrange 1
 -- 3A0000-3AFFFF - cell arrange 2
-FX68_SVP_RAM_SEL <= '1' when svp_en = '1' and (FX68_A(23 downto 19) = x"3"&'0' or FX68_A(23 downto 16) = x"39" or FX68_A(23 downto 16) = x"3A") and FX68_AS_N = '0' else '0';
-DMA_SVP_RAM_SEL <= '1' when svp_en = '1' and (VBUS_ADDR(23 downto 19) = x"3"&'0' or VBUS_ADDR(23 downto 16) = x"39" or VBUS_ADDR(23 downto 16) = x"3A") and VBUS_SEL = '1' else '0';
+FX68_SVP_RAM_SEL <= '1' when svp_on = '1' and (FX68_A(23 downto 19) = x"3"&'0' or FX68_A(23 downto 16) = x"39" or FX68_A(23 downto 16) = x"3A") and FX68_AS_N = '0' else '0';
+DMA_SVP_RAM_SEL <= '1' when svp_on = '1' and (VBUS_ADDR(23 downto 19) = x"3"&'0' or VBUS_ADDR(23 downto 16) = x"39" or VBUS_ADDR(23 downto 16) = x"3A") and VBUS_SEL = '1' else '0';
 
 process( MRST_N, MCLK )
 variable svp_dma_a: std_logic_vector(23 downto 1);

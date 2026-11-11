@@ -35,9 +35,12 @@
 
 LIBRARY ieee;
 USE ieee.std_logic_1164.all;
+USE ieee.numeric_std.all; -- karabas: for the inferred RAM
 
-LIBRARY altera_mf;
-USE altera_mf.altera_mf_components.all;
+-- karabas: the altsyncram (Altera) replaced by an inferred RAM of the same behaviour: 128 x 32,
+-- byte enables on the write port, the read address registered, the output not (q follows the
+-- registered address, as address_reg_b = CLOCK0, outdata_reg_b = UNREGISTERED). A write and a read
+-- of the same address in one clock give the old data (read_during_write DONT_CARE upstream).
 
 ENTITY obj_cache IS
 	PORT
@@ -55,45 +58,25 @@ END obj_cache;
 
 ARCHITECTURE SYN OF obj_cache IS
 
-	SIGNAL sub_wire0	: STD_LOGIC_VECTOR (31 DOWNTO 0);
+	TYPE ram_t IS ARRAY (0 TO 127) OF STD_LOGIC_VECTOR (7 DOWNTO 0);
+	SIGNAL ram0, ram1, ram2, ram3 : ram_t := (OTHERS => (OTHERS => '0'));
+	SIGNAL rd_q : STD_LOGIC_VECTOR (31 DOWNTO 0) := (OTHERS => '0');
 
 BEGIN
-	q    <= sub_wire0(31 DOWNTO 0);
 
-	altsyncram_component : altsyncram
-	GENERIC MAP (
-		address_aclr_b => "NONE",
-		address_reg_b => "CLOCK0",
-		byte_size => 8,
-		clock_enable_input_a => "BYPASS",
-		clock_enable_input_b => "BYPASS",
-		clock_enable_output_b => "BYPASS",
-		intended_device_family => "Cyclone III",
-		lpm_type => "altsyncram",
-		numwords_a => 128,
-		numwords_b => 128,
-		operation_mode => "DUAL_PORT",
-		outdata_aclr_b => "NONE",
-		outdata_reg_b => "UNREGISTERED",
-		power_up_uninitialized => "FALSE",
-		read_during_write_mode_mixed_ports => "DONT_CARE",
-		widthad_a => 7,
-		widthad_b => 7,
-		width_a => 32,
-		width_b => 32,
-		width_byteena_a => 4
-	)
-	PORT MAP (
-		address_a => wraddress,
-		byteena_a => byteena_a,
-		clock0 => clock,
-		data_a => data,
-		wren_a => wren,
-		address_b => rdaddress,
-		q_b => sub_wire0
-	);
+	PROCESS (clock)
+	BEGIN
+		IF rising_edge(clock) THEN
+			IF wren = '1' AND byteena_a(0) = '1' THEN ram0(to_integer(unsigned(wraddress))) <= data(7 DOWNTO 0); END IF;
+			IF wren = '1' AND byteena_a(1) = '1' THEN ram1(to_integer(unsigned(wraddress))) <= data(15 DOWNTO 8); END IF;
+			IF wren = '1' AND byteena_a(2) = '1' THEN ram2(to_integer(unsigned(wraddress))) <= data(23 DOWNTO 16); END IF;
+			IF wren = '1' AND byteena_a(3) = '1' THEN ram3(to_integer(unsigned(wraddress))) <= data(31 DOWNTO 24); END IF;
+			rd_q <= ram3(to_integer(unsigned(rdaddress))) & ram2(to_integer(unsigned(rdaddress))) &
+			        ram1(to_integer(unsigned(rdaddress))) & ram0(to_integer(unsigned(rdaddress)));
+		END IF;
+	END PROCESS;
 
-
+	q <= rd_q;
 
 END SYN;
 

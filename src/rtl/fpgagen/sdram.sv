@@ -24,7 +24,7 @@
 module sdram (
 
 	// interface to the MT48LC16M16 chip
-	inout  reg [15:0] SDRAM_DQ,   // 16 bit bidirectional data bus
+	inout  wire [15:0] SDRAM_DQ,   // 16 bit bidirectional data bus (karabas: wire, sv2v turned "reg" + assign into an always block XST rejects)
 	output reg [12:0] SDRAM_A,    // 13 bit multiplexed address bus
 	output reg        SDRAM_DQML, // two byte masks
 	output reg        SDRAM_DQMH, // two byte masks
