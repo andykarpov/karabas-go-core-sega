@@ -242,8 +242,8 @@ port map(
 	clk         => SDR_CLK,
 	init_n      => FPGA_INIT_N,
 
-	std_logic_vector(SDRAM_DQ) => DRAM_DQ,
-	std_logic_vector(SDRAM_A)  => DRAM_ADDR,
+	SDRAM_DQ                   => DRAM_DQ,   -- karabas: no type conversion (the same type; ghdl rejects one on an inout)
+	SDRAM_A                    => DRAM_ADDR,
 	SDRAM_nWE                  => DRAM_WE_N,
 	SDRAM_nRAS                 => DRAM_RAS_N,
 	SDRAM_nCAS                 => DRAM_CAS_N,
