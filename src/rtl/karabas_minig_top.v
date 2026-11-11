@@ -1,0 +1,607 @@
+`timescale 1ns / 1ps
+`default_nettype wire
+
+/*
+ Sega Mega Drive / Genesis core for Karabas Mini rev.G (HDMI, PCM5102): fpgagen of MiST
+ (fpgagen_sdram_top: fpgagen + its SDRAM controller sdram.sv) with the board glue of
+ karabas-go-modules.
+
+ Clocks: one PLL, VCO 650 MHz (50 * 13):
+   pll_clk<5> MCLK 54.17 MHz (/12): the Genesis (MiST 54, a real console 53.69 / 53.20), the mcu link,
+              the loader, the pads, the frame buffer writes and the SRAM
+   pll_clk<4> 108.3 MHz (/6): the SDRAM controller (twice MCLK, rising edges together)
+   pll_clk<3> 108.3 MHz (/6, 330 degrees = -0.77 ns): SDR_CLK through an ODDR2: the chip a little ahead
+              of the controller, as the -772 ps of MiST that the capture points of sdram.sv expect
+   pll_clk<0> 65.0 MHz (/10): the video out (1024 x 768 at 60 Hz), the OSD, HDMI; FT_CLK_OUT 8.125 MHz
+              (/8 of it, karabas-go-notes ft-clk-out-required)
+   pll_clk<1>, <2> 325 MHz (/2, 0 and 180 degrees): the HDMI serialiser
+ MCLK and the SDRAM clock are related (FROM-TO in the ucf); clk_65 is crossed with synchronisers,
+ a toggle handshake and the line buffer of sega_fb (TIG).
+
+ Memory: ROM (up to 32 MB), 68K RAM, VRAM and save RAM in the SDRAM (sdram.sv, as MiST); the SRAM
+ holds the frame buffer of sega_fb.
+
+ The cartridge: the file of the core (type fileloader: .bin, .gen, .md in the sega folder) through the file loader
+ of kg_mcu into the boot interface of fpgagen (sega_loader); the region of its header for Auto.
+
+ Soft switches (core.json osd order):
+   0 Region (Auto / JP / US / EU)   1 Pad (6 button / 3 button)   2 Swap joysticks   3 Reset
+*/
+
+module karabas_minig_top (
+	input wire CLK_50MHZ,
+
+	inout wire UART_RX,
+	inout wire UART_TX,
+	inout wire UART_CTS,
+
+	output wire [20:0] MA,
+	inout wire [15:0] MD,
+	output wire [1:0] MWR_N,
+	output wire [1:0] MRD_N,
+
+	output wire [1:0] SDR_BA,
+	output wire [12:0] SDR_A,
+	output wire SDR_CLK,
+	output wire [1:0] SDR_DQM,
+	output wire SDR_WE_N,
+	output wire SDR_CAS_N,
+	output wire SDR_RAS_N,
+	inout wire [15:0] SDR_DQ,
+
+	output wire SD_CS_N,
+	output wire SD_CLK,
+	output wire SD_DI,
+	input wire SD_DO,
+	input wire SD_DET_N,
+
+	input wire [7:0] VGA_R,
+	input wire [7:0] VGA_G,
+	input wire [7:0] VGA_B,
+	input wire VGA_HS,
+	input wire VGA_VS,
+
+	output wire [3:0] TMDS_P,
+	output wire [3:0] TMDS_N,
+
+	output wire FT_SPI_CS_N,
+	output wire FT_SPI_SCK,
+	input wire FT_SPI_MISO,
+	output wire FT_SPI_MOSI,
+	input wire FT_INT_N,
+	input wire FT_CLK,
+	input wire FT_DE,
+	output wire FT_CLK_OUT,
+
+	output wire [2:0] WA,
+	output wire [1:0] WCS_N,
+	output wire WRD_N,
+	output wire WWR_N,
+	output wire WRESET_N,
+	inout wire [15:0] WD,
+
+	output wire TAPE_OUT,
+	input wire TAPE_IN,
+
+	output wire DAC_BCK,
+	output wire DAC_WS,
+	output wire DAC_DAT,
+
+	output wire ADC_CLK,
+	inout wire ADC_BCK,
+	inout wire ADC_LRCK,
+	input wire ADC_DOUT,
+
+	input wire MCU_CS_N,
+	input wire MCU_SCK,
+	inout wire MCU_MOSI,
+	output wire MCU_MISO,
+	inout wire [5:0] MCU_IO, // [0] burst cs_n, [1] burst ready, [2] sd2 cs_n, [3] ft cs_n
+
+	output wire MIDI_TX,
+
+	output wire ESP32_SPI_CS_N,
+	input wire ESP32_PCM_BCK,
+	input wire ESP32_PCM_RLCK,
+	input wire ESP32_PCM_DAT,
+
+	output wire FLASH_CS_N,
+	input wire FLASH_DO,
+	output wire FLASH_DI,
+	output wire FLASH_SCK,
+	output wire FLASH_WP_N,
+	output wire FLASH_HOLD_N
+);
+
+// ------------------------------------------------------------------ unused
+
+assign WA = 3'b000;
+assign WCS_N = 2'b11;
+assign WRD_N = 1'b1;
+assign WWR_N = 1'b1;
+assign WRESET_N = 1'b1;
+assign WD = 16'bz;
+
+assign TAPE_OUT = 1'b0;
+assign ESP32_SPI_CS_N = 1'b1;
+assign UART_RX = 1'bz;
+assign UART_TX = 1'bz;
+assign UART_CTS = 1'bz;
+assign MIDI_TX = 1'b1;
+
+assign ADC_CLK = 1'b0;
+assign ADC_BCK = 1'bz;
+assign ADC_LRCK = 1'bz;
+
+assign FLASH_DI = 1'b1;
+assign FLASH_SCK = 1'b0;
+assign FLASH_WP_N = 1'b1;
+assign FLASH_HOLD_N = 1'b1;
+
+// ------------------------------------------------------------------ clocks
+
+wire clk_65, clk_ser, clk_ser_n, clk_sdr_out, clk_sdr, mclk;
+wire locked;
+wire [5:0] pll_clk;
+kg_pll #(
+	.CLKIN_PERIOD(20.0),
+	.DIVCLK_DIVIDE(1),
+	.CLKFBOUT_MULT(13),
+	.CLKOUT0_DIVIDE(10),
+	.CLKOUT1_DIVIDE(2),
+	.CLKOUT2_DIVIDE(2), .CLKOUT2_PHASE(180.0),
+	.CLKOUT3_DIVIDE(6), .CLKOUT3_PHASE(330.0),
+	.CLKOUT4_DIVIDE(6),
+	.CLKOUT5_DIVIDE(12),
+	.BUFG_MASK(6'b111111)
+) pll (
+	.clk_in(CLK_50MHZ),
+	.rst(1'b0),
+	.clk_out(pll_clk),
+	.locked(locked)
+);
+assign clk_65 = pll_clk[0];
+assign clk_ser = pll_clk[1];
+assign clk_ser_n = pll_clk[2];
+assign clk_sdr_out = pll_clk[3];
+assign clk_sdr = pll_clk[4];
+assign mclk = pll_clk[5];
+wire areset = ~locked;
+
+// the clock of the FT812 (it must always have one): 65 / 8 = 8.125 MHz
+reg [1:0] ft_div = 2'd0;
+reg ft_q = 1'b0;
+always @(posedge clk_65) begin
+	ft_div <= ft_div + 2'd1;
+	if (ft_div == 2'd3) ft_q <= ~ft_q;
+end
+ODDR2 oddr_ft_clk (.Q(FT_CLK_OUT), .C0(clk_65), .C1(~clk_65), .CE(1'b1), .D0(ft_q), .D1(ft_q), .R(1'b0), .S(1'b0));
+
+// ------------------------------------------------------------------ MCU
+
+// MCU_SCK on a global buffer (as tsconf and the menu: on local routing the flip-flops of the SPI
+// receiver had several ns of clock skew); the FT812 and SD2 get the IBUFG output (a BUFG drives no pad)
+wire mcu_sck_ibufg, mcu_sck;
+IBUFG ibufg_mcu_sck (.I(MCU_SCK), .O(mcu_sck_ibufg));
+BUFG bufg_mcu_sck (.I(mcu_sck_ibufg), .O(mcu_sck));
+
+wire mcu_burst_ready;
+assign MCU_IO[1] = mcu_burst_ready;
+assign MCU_IO[0] = 1'bz;
+assign MCU_IO[5:2] = 4'bzzzz;
+
+wire [7:0] kb_status, kb_dat0, kb_dat1, kb_dat2, kb_dat3, kb_dat4, kb_dat5;
+wire [12:0] joy_l, joy_r;
+wire file_active, file_wr;
+wire [7:0] file_data;
+wire [31:0] file_addr;
+wire [15:0] softsw_command, osd_command;
+wire mcu_busy;
+wire dvi_only;
+wire ft_cs_n, ft_mosi, ft_spi_on, sd2_cs_n, sd2_mosi;
+
+kg_mcu #(
+	.BURST_MAX_MHZ(32),  // Rev.G has MCU_SCK on a global clock pin
+	.CS_FILTER(3),
+	.ENABLE_RTC(0),
+	.ENABLE_UART(0),
+	.ENABLE_MATRIX(0),
+	.ENABLE_DEBUG(0),
+	.ENABLE_IMG(0),
+	.ENABLE_IMG_WP(0),
+	.ENABLE_MIDI(0),
+	.ENABLE_FILE(1),     // the cartridge (the file of the fileloader core)
+	.FILE_CMDS(1),       // FILELOADER / FILEBANK / FILEDATA, as snes / nes
+	.FILE_WR_EACH(1),    // every byte (a new load starts at 0 again)
+	.FILE_TO_ROM(0),
+	.ENABLE_FT(1),
+	.ENABLE_SD2(1)
+) mcu (
+	.CLK(mclk),
+	.N_RESET(~areset),
+
+	.MCU_MOSI(MCU_MOSI),
+	.MCU_MISO(MCU_MISO),
+	.MCU_SCK(mcu_sck),
+	.MCU_SS(MCU_CS_N),
+	.MCU_SPI_FT_SS(MCU_IO[3]),
+	.MCU_SPI_SD2_SS(MCU_IO[2]),
+	.MCU_BURST_CS_N(MCU_IO[0]),
+	.MCU_BURST_READY(mcu_burst_ready),
+
+	.KB_STATUS(kb_status),
+	.KB_DAT0(kb_dat0),
+	.KB_DAT1(kb_dat1),
+	.KB_DAT2(kb_dat2),
+	.KB_DAT3(kb_dat3),
+	.KB_DAT4(kb_dat4),
+	.KB_DAT5(kb_dat5),
+	.KB_SCANCODE(),
+	.KB_SCANCODE_UPD(),
+	.JOY_L(joy_l),
+	.JOY_R(joy_r),
+	.MS_X(),
+	.MS_Y(),
+	.MS_Z(),
+	.MS_B(),
+	.MS_UPD(),
+
+	.ROMLOADER_ACTIVE(),
+	.ROMLOAD_ADDR(),
+	.ROMLOAD_DATA(),
+	.ROMLOAD_WR(),
+
+	.FILELOAD_RESET(),
+	.FILELOAD_ACTIVE(file_active),
+	.FILELOAD_SIZE(),
+	.FILELOAD_ADDR(file_addr),
+	.FILELOAD_DATA(file_data),
+	.FILELOAD_WR(file_wr),
+	.FILELOAD_SLOT(),
+
+	.SOFTSW_COMMAND(softsw_command),
+	.OSD_COMMAND(osd_command),
+	.BUSY(mcu_busy),
+
+	.FT_SPI_ON(ft_spi_on),
+	.FT_CS_N(ft_cs_n),
+	.FT_MOSI(ft_mosi),
+	.FT_MISO(FT_SPI_MISO),
+	.FT_SCK(),
+	.SD2_CS_N(sd2_cs_n),
+	.SD2_MOSI(sd2_mosi),
+	.SD2_MISO(SD_DO),
+	.SD2_SCK(),
+
+	.DVI_ONLY(dvi_only),
+
+	.MIDI_DATA(),
+	.MIDI_WR(),
+	.MIDI_LOST(),
+
+	// not used by this core
+	.PS2_COMMAND(16'h0000),
+	.PS2_COMMAND_WR(1'b0),
+	.RTC_A(8'h00),
+	.RTC_DI(8'h00),
+	.RTC_DO(),
+	.RTC_CS(1'b0),
+	.RTC_WR_N(1'b1),
+	.UART_RX_DATA(),
+	.UART_RX_IDX(),
+	.UART_TX_DATA(8'h00),
+	.UART_TX_WR(1'b0),
+	.UART_TX_MODE(1'b0),
+	.UART_DLM(8'h00),
+	.UART_DLL(8'h00),
+	.UART_DLM_WR(1'b0),
+	.UART_DLL_WR(1'b0),
+	.MATRIX_CMD(24'h000000),
+	.MATRIX_CMD_WR(1'b0),
+	.DEBUG_ADDR(16'h0000),
+	.DEBUG_DATA(16'h0000),
+	.IMG_MOUNTED(),
+	.IMG_SIZE(),
+	.IMG_WP(),
+	.IMG_DATA_WR(),
+	.IMG_DATA_ADDR(),
+	.IMG_DATA(),
+	.IMG_RESULT_WR(),
+	.IMG_RESULT(),
+	.IMG_SUM(),
+	.IMG_Q_WR(1'b0),
+	.IMG_Q_DI(24'h000000),
+	.IMG_Q_ACK(),
+	.FDD_CHNG_REQ(1'b0),
+	.FDD_CHNG_DS(2'd0),
+	.PRN_DATA(8'h00),
+	.PRN_WR(1'b0),
+	.ESP_UART_RX_DATA(8'h00),
+	.ESP_UART_RX_WR(1'b0),
+	.FLASHBOOT_START(1'b0),
+	.FLASHBOOT_COREID(5'd0)
+);
+
+assign FT_SPI_CS_N = ft_spi_on ? ft_cs_n : 1'b1;
+assign FT_SPI_SCK = ft_spi_on ? mcu_sck_ibufg : 1'b1;
+assign FT_SPI_MOSI = ft_spi_on ? ft_mosi : 1'b1;
+assign SD_CS_N = sd2_cs_n;
+assign SD_DI = sd2_mosi;
+assign SD_CLK = mcu_sck_ibufg;
+
+// ------------------------------------------------------------------ soft switches
+
+wire [4*8-1:0] sw;
+kg_soft_switches #(.N(4)) soft_switches (
+	.clk(mclk),
+	.command(softsw_command),
+	.regs(sw),
+	.upd()
+);
+wire [1:0] sw_region = sw[0*8 +: 2];   // 0 Auto, 1 JP, 2 US, 3 EU
+wire sw_3button = sw[1*8];
+wire sw_swap = sw[2*8];
+wire sw_reset = sw[3*8];
+
+// ------------------------------------------------------------------ cartridge loader
+
+wire ext_reset_n, ext_bootdone, ext_data_ack, ext_data_req;
+wire [15:0] ext_data;
+wire [2:0] hdr_region;   // { EU, US, JP } of the header
+sega_loader loader (
+	.clk(mclk),
+	.file_active(file_active),
+	.file_wr(file_wr),
+	.file_addr(file_addr),
+	.file_data(file_data),
+	.ext_reset_n(ext_reset_n),
+	.ext_bootdone(ext_bootdone),
+	.ext_data(ext_data),
+	.ext_data_ack(ext_data_ack),
+	.ext_data_req(ext_data_req),
+	.hdr_region(hdr_region),
+	.loading()
+);
+
+// the region: Auto takes US, else EU, else JP of the header (Genesis_MiSTer's default priority)
+reg rg_export = 1'b1, pal = 1'b0;
+always @(posedge mclk)
+	case (sw_region)
+		2'd1: begin rg_export <= 1'b0; pal <= 1'b0; end
+		2'd2: begin rg_export <= 1'b1; pal <= 1'b0; end
+		2'd3: begin rg_export <= 1'b1; pal <= 1'b1; end
+		default:
+			if (hdr_region[1])      begin rg_export <= 1'b1; pal <= 1'b0; end
+			else if (hdr_region[2]) begin rg_export <= 1'b1; pal <= 1'b1; end
+			else                    begin rg_export <= 1'b0; pal <= 1'b0; end
+	endcase
+
+// ext_sw of fpgagen: 3 PSG off, 4 FM off, 5 export, 6 PAL, 9 VRAM speed emulation (MiST default on),
+// 10 fake EEPROM, 13 HiFi PCM, 14 CPU turbo, 15 border, 0 CRAM dots
+wire [15:0] ext_sw = { 6'b000000, 1'b1, 2'b00, pal, rg_export, 5'b00000 };
+
+// reset: the PLL, the Reset item (the boot FSM of fpgagen holds the CPU while a cartridge loads)
+reg [7:0] rst_cnt = 8'd0;
+reg gen_reset_n = 1'b0;
+always @(posedge mclk) begin
+	if (areset || sw_reset)
+		rst_cnt <= 8'd0;
+	else if (rst_cnt != 8'hFF)
+		rst_cnt <= rst_cnt + 8'd1;
+	gen_reset_n <= rst_cnt == 8'hFF;
+end
+
+// ------------------------------------------------------------------ pads
+
+// mcu JOY_L / JOY_R: [0] connected, [1] up, [2] down, [3] left, [4] right, [5] start, [6] A, [7] B,
+// [8] C, [9] X, [10] Y, [11] Z, [12] mode (1 = pressed); gen_ctrl wants them active low
+wire [12:0] pad1 = sw_swap ? joy_r : joy_l;
+wire [12:0] pad2 = sw_swap ? joy_l : joy_r;
+wire [7:0] douta, oea, dina, doutb, oeb, dinb;
+
+gen_ctrl ctrl_a (
+	.RST_N(gen_reset_n), .CLK(mclk),
+	.DAT(douta), .DOUT(dina), .CTL(oea),
+	.J3BUT(sw_3button), .SWAP_Y(1'b0), .TEAMPLAY(1'b0),
+	.UP(~pad1[1]), .DOWN(~pad1[2]), .LEFT(~pad1[3]), .RIGHT(~pad1[4]),
+	.A(~pad1[6]), .B(~pad1[7]), .C(~pad1[8]), .START(~pad1[5]),
+	.MODE(~pad1[12]), .X(~pad1[9]), .Y(~pad1[10]), .Z(~pad1[11])
+);
+gen_ctrl ctrl_b (
+	.RST_N(gen_reset_n), .CLK(mclk),
+	.DAT(doutb), .DOUT(dinb), .CTL(oeb),
+	.J3BUT(sw_3button), .SWAP_Y(1'b0), .TEAMPLAY(1'b0),
+	.UP(~pad2[1]), .DOWN(~pad2[2]), .LEFT(~pad2[3]), .RIGHT(~pad2[4]),
+	.A(~pad2[6]), .B(~pad2[7]), .C(~pad2[8]), .START(~pad2[5]),
+	.MODE(~pad2[12]), .X(~pad2[9]), .Y(~pad2[10]), .Z(~pad2[11])
+);
+
+// ------------------------------------------------------------------ Genesis
+
+wire [3:0] vdp_r, vdp_g, vdp_b;
+wire vdp_hbl, vdp_vbl, vdp_ce;
+wire [15:0] snd_l, snd_r;
+wire sdr_ba0, sdr_ba1, sdr_cs_n, sdr_ldqm, sdr_udqm;
+
+fpgagen_sdram_top gen (   // USE_SVP false by default (karabas)
+	.reset_n(gen_reset_n),
+	.MCLK(mclk),
+	.SDR_CLK(clk_sdr),
+	.DL_CLK(mclk),
+	.FPGA_INIT_N(locked),
+
+	.DRAM_ADDR(SDR_A),
+	.DRAM_BA_0(sdr_ba0),
+	.DRAM_BA_1(sdr_ba1),
+	.DRAM_CAS_N(SDR_CAS_N),
+	.DRAM_CKE(),
+	.DRAM_CS_N(sdr_cs_n),
+	.DRAM_DQ(SDR_DQ),
+	.DRAM_LDQM(sdr_ldqm),
+	.DRAM_RAS_N(SDR_RAS_N),
+	.DRAM_UDQM(sdr_udqm),
+	.DRAM_WE_N(SDR_WE_N),
+
+	.DAC_LDATA(snd_l),
+	.DAC_RDATA(snd_r),
+
+	.RED(vdp_r),
+	.GREEN(vdp_g),
+	.BLUE(vdp_b),
+	.VS(),
+	.HS(),
+	.HBL(vdp_hbl),
+	.VBL(vdp_vbl),
+	.IN_BORDER(),
+	.CE_PIX(vdp_ce),
+	.LED(),
+
+	.DINA(dina),
+	.DOUTA(douta),
+	.OEA(oea),
+	.DINB(dinb),
+	.DOUTB(doutb),
+	.OEB(oeb),
+
+	.JCART_EN(1'b0),
+	.JCART_TH(),
+	.JCART_DO(16'hFFFF),
+
+	.saveram_addr(15'd0),
+	.saveram_we(1'b0),
+	.saveram_din(8'd0),
+	.saveram_rd(1'b0),
+	.saveram_dout(),
+
+	.ext_reset_n(ext_reset_n),
+	.ext_bootdone(ext_bootdone),
+	.ext_data(ext_data),
+	.ext_data_req(ext_data_req),
+	.ext_data_ack(ext_data_ack),
+	.ext_sw(ext_sw)
+);
+assign SDR_BA = { sdr_ba1, sdr_ba0 };
+assign SDR_DQM = { sdr_udqm, sdr_ldqm };
+// FLASH_CS_N (T3) is the SDRAM /CS of Mini G2 (rev G: tied low on the board); fpgagen drives 0
+assign FLASH_CS_N = sdr_cs_n;
+ODDR2 oddr_sdr_clk (.Q(SDR_CLK), .C0(clk_sdr_out), .C1(~clk_sdr_out), .CE(1'b1), .D0(1'b1), .D1(1'b0), .R(1'b0), .S(1'b0));
+
+// ------------------------------------------------------------------ video
+
+wire [23:0] vid_rgb;
+wire vid_hs, vid_vs, vid_de;
+sega_fb fb (
+	.clk(mclk),
+	.r(vdp_r),
+	.g(vdp_g),
+	.b(vdp_b),
+	.hbl(vdp_hbl),
+	.vbl(vdp_vbl),
+	.ce_pix(vdp_ce),
+	.MA(MA),
+	.MD(MD),
+	.MWR_N(MWR_N),
+	.MRD_N(MRD_N),
+	.clk_65(clk_65),
+	.rgb(vid_rgb),
+	.hs(vid_hs),
+	.vs(vid_vs),
+	.de(vid_de)
+);
+
+// osd_command into clk_65: taken when two samples agree (it holds for many clocks)
+reg [15:0] osd_s1 = 16'd0, osd_s2 = 16'd0, osd_cmd = 16'd0;
+always @(posedge clk_65) begin
+	osd_s1 <= osd_command;
+	osd_s2 <= osd_s1;
+	if (osd_s1 == osd_s2)
+		osd_cmd <= osd_s2;
+end
+
+// as core-macplus / core-bk: 1024 x 768, the counters start at the leading edge of the syncs
+wire [23:0] osd_rgb;
+kg_osd_overlay #(.H_OFFSET(276), .V_OFFSET(105), .H_DIV4_WIDTH(1400), .V_DIV4_HEIGHT(900)) osd (
+	.clk(clk_65),
+	.rgb_i(vid_rgb),
+	.rgb_o(osd_rgb),
+	.hsync_i(vid_hs),
+	.vsync_i(vid_vs),
+	.v_offset(11'd0),
+	.h_offset(11'd0),
+	.osd_command(osd_cmd)
+);
+
+// ------------------------------------------------------------------ audio
+
+// the mixer output of fpgagen (FM + PSG, signed 16 bits, changing at MCLK) taken at 48 kHz of MCLK:
+// 54.1667 MHz = 650 / 12 MHz, 48 kHz / MCLK = 72 / 81250 exactly
+reg [16:0] aud_acc = 17'd0;
+reg [15:0] aud_l = 16'd0, aud_r = 16'd0;
+reg aud_t = 1'b0;
+always @(posedge mclk) begin
+	if (aud_acc >= 17'd81250 - 17'd72) begin
+		aud_acc <= aud_acc + 17'd72 - 17'd81250;
+		aud_l <= snd_l;
+		aud_r <= snd_r;
+		aud_t <= ~aud_t;
+	end
+	else
+		aud_acc <= aud_acc + 17'd72;
+end
+
+kg_pcm5102 #(.DIV_BITS(2)) dac (  // bck 3.39 MHz, 105.8 kHz
+	.clk(mclk),
+	.reset(areset),
+	.left(aud_l),
+	.right(aud_r),
+	.din(DAC_DAT),
+	.bck(DAC_BCK),
+	.lrck(DAC_WS)
+);
+
+// into clk_65 for HDMI: the toggle of a new sample (the samples hold for 1128 MCLK)
+reg [2:0] aud_ts = 3'd0;
+reg aud_stb = 1'b0;
+reg [23:0] hdmi_l = 24'd0, hdmi_r = 24'd0;
+always @(posedge clk_65) begin
+	aud_ts <= { aud_ts[1:0], aud_t };
+	aud_stb <= aud_ts[2] != aud_ts[1];
+	if (aud_ts[2] != aud_ts[1]) begin
+		hdmi_l <= { aud_l, 8'd0 };
+		hdmi_r <= { aud_r, 8'd0 };
+	end
+end
+
+// ------------------------------------------------------------------ HDMI
+
+wire dvi_only_65;
+kg_sync #(.W(1), .STAGES(3)) sync_dvi (.clk(clk_65), .d(dvi_only), .q(dvi_only_65));
+
+// osd_rgb is one clock behind the syncs of the overlay's input: the syncs and de go with it
+reg hdmi_hs = 1'b1, hdmi_vs = 1'b1, hdmi_de = 1'b0;
+always @(posedge clk_65) begin
+	hdmi_hs <= ~vid_hs;   // 1024 x 768 at 60 Hz: negative syncs (VESA)
+	hdmi_vs <= ~vid_vs;
+	hdmi_de <= vid_de;
+end
+
+hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
+	.clk(clk_65),
+	.sclk(clk_ser),
+	.sclk_n(clk_ser_n),
+	.reset(areset),
+	.rgb(osd_rgb),
+	.vsync(hdmi_vs),
+	.hsync(hdmi_hs),
+	.de(hdmi_de),
+	.audio_en(~dvi_only_65),
+	.audio_l(hdmi_l),
+	.audio_r(hdmi_r),
+	.audio_clk(aud_stb),
+	.tx_clk_n(TMDS_N[3]),
+	.tx_clk_p(TMDS_P[3]),
+	.tx_d_n(TMDS_N[2:0]),
+	.tx_d_p(TMDS_P[2:0])
+);
+
+endmodule

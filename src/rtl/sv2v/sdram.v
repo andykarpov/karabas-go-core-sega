@@ -276,25 +276,33 @@ module sdram (
 			ds_next[0] = 0;
 		end
 	end
-	always @(*)
+	reg [3:0] vn_port;
+	reg [24:1] vn_addr;
+	reg vn_oe;
+	reg vn_we;
+	reg [1:0] vn_ds;
+	reg [15:0] vn_d;
+	always @(posedge clk) begin
+		vn_d <= vram_d;
 		if (vram_req ^ port_state[PORT_VRAM]) begin
-			next_port[1] = PORT_VRAM;
-			addr_latch_next[1] = {9'b111111111, vram_a};
-			{oe_next[1], we_next[1]} = {~vram_we, vram_we};
-			ds_next[1] = {~vram_u_n, ~vram_l_n};
+			vn_port <= PORT_VRAM;
+			vn_addr <= {9'b111111111, vram_a};
+			{vn_oe, vn_we} <= {~vram_we, vram_we};
+			vn_ds <= {~vram_u_n, ~vram_l_n};
 		end
 		else if (vram32_req ^ port_state[PORT_VRAM32]) begin
-			next_port[1] = PORT_VRAM32;
-			addr_latch_next[1] = {9'b111111111, vram32_a};
-			{oe_next[1], we_next[1]} = 2'b10;
-			ds_next[1] = 2'b11;
+			vn_port <= PORT_VRAM32;
+			vn_addr <= {9'b111111111, vram32_a};
+			{vn_oe, vn_we} <= 2'b10;
+			vn_ds <= 2'b11;
 		end
 		else begin
-			next_port[1] = PORT_NONE;
-			addr_latch_next[1] = addr_latch[1];
-			{oe_next[1], we_next[1]} = 0;
-			ds_next[1] = 0;
+			vn_port <= PORT_NONE;
+			vn_addr <= addr_latch[1];
+			{vn_oe, vn_we} <= 0;
+			vn_ds <= 0;
 		end
+	end
 	always @(posedge clk) begin
 		sd_din <= SDRAM_DQ;
 		drive_dq <= 1'b0;
@@ -333,18 +341,18 @@ module sdram (
 				sd_cmd <= CMD_ACTIVE;
 			if (t == STATE_RAS0) begin
 				refresh <= 1'b0;
-				port[1] <= next_port[1];
-				addr_latch[1] <= addr_latch_next[1];
-				{oe_latch[1], we_latch[1]} <= {oe_next[1], we_next[1]};
-				ds[1] <= ds_next[1];
-				din_latch[1] <= vram_d;
-				if (next_port[1] != PORT_NONE) begin
-					port_state[next_port[1]] <= ~port_state[next_port[1]];
+				port[1] <= vn_port;
+				addr_latch[1] <= vn_addr;
+				{oe_latch[1], we_latch[1]} <= {vn_oe, vn_we};
+				ds[1] <= vn_ds;
+				din_latch[1] <= vn_d;
+				if (vn_port != PORT_NONE) begin
+					port_state[vn_port] <= ~port_state[vn_port];
 					sd_cmd <= CMD_ACTIVE;
-					SDRAM_A <= addr_latch_next[1][22:10];
-					SDRAM_BA <= addr_latch_next[1][24:23];
+					SDRAM_A <= vn_addr[22:10];
+					SDRAM_BA <= vn_addr[24:23];
 				end
-				if ((((next_port[1] == PORT_NONE) && need_refresh) && !we_latch[0]) && !oe_latch[0]) begin
+				if ((((vn_port == PORT_NONE) && need_refresh) && !we_latch[0]) && !oe_latch[0]) begin
 					refresh <= 1'b1;
 					refresh_cnt <= 0;
 					sd_cmd <= CMD_AUTO_REFRESH;

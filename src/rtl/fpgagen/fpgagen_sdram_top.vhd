@@ -43,7 +43,7 @@ use work.sdram_pkg.all; -- karabas: package renamed
 entity fpgagen_sdram_top is
 generic (
   INTERNAL_VRAM : boolean := false; -- karabas: must stay false, the internal VRAM is left out
-  USE_SVP       : boolean := true -- karabas: false leaves the SVP (Virtua Racing) out, ~2.3k LUT
+  USE_SVP       : boolean := false -- karabas: the SVP (Virtua Racing) is left out by default (~2.3k LUT, no room)
 );
 port(
 	reset_n      : in std_logic;
