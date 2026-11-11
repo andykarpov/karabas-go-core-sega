@@ -55,8 +55,8 @@ begin
 				if(romwr_a = 392/2) then cart_id(23 downto  8) <= ext_data; end if;
 				if(romwr_a = 394/2) then cart_id( 7 downto  0) <= ext_data(15 downto 8); end if;
 			elsif ext_bootdone = '1' then
-				if   (cart_id(63 downto 0) = to_slv("MK-1229 ")) then svp_en <= '1';    -- Virtua Racing EU/US
-				elsif(cart_id(63 downto 0) = to_slv("G-7001  ")) then svp_en <= '1';    -- Virtua Racing JP
+				if   (cart_id(63 downto 0) = to_slv(string'("MK-1229 "))) then svp_en <= '1';    -- Virtua Racing EU/US (karabas: string' for ghdl, the literal was ambiguous)
+				elsif(cart_id(63 downto 0) = to_slv(string'("G-7001  "))) then svp_en <= '1';    -- Virtua Racing JP (karabas: string' for ghdl)
 				end if;
 			end if;
 		end if;
