@@ -82,7 +82,15 @@ component sdram
 		svp_rom_req : in std_logic;
 		svp_rom_ack : out std_logic;
 		svp_rom_a : in std_logic_vector(23 downto 1);
-		svp_rom_q : out std_logic_vector(15 downto 0)
+		svp_rom_q : out std_logic_vector(15 downto 0);
+
+-- karabas: the backup RAM port (kg_bk_ram)
+		bk_req : in std_logic;
+		bk_ack : out std_logic;
+		bk_we : in std_logic;
+		bk_a : in std_logic_vector(15 downto 1);
+		bk_d : in std_logic_vector(7 downto 0);
+		bk_q : out std_logic_vector(15 downto 0)
 );
 end component;
 

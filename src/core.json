@@ -1,7 +1,7 @@
 {
     "id": "sega",
     "name": "Sega Mega Drive",
-    "build": "26111101",
+    "build": "26111102",
     "visible": true,
     "type": "fileloader",
     "dir": "sega",
@@ -19,6 +19,7 @@
     {"type": "S", "name": "Region", "options": ["Auto", "JP", "US", "EU"], "default": 0, "hotkey": "Menu+R"},
     {"type": "S", "name": "Pad", "options": ["6 button", "3 button"], "default": 0, "hotkey": "Menu+P"},
     {"type": "S", "name": "Swap joysticks", "options": ["Off", "On"], "default": 0, "hotkey": "Menu+J"},
+    {"type": "S", "name": "Border", "options": ["Off", "On"], "default": 0, "hotkey": "Menu+B"},
     {"type": "T", "name": "Reset", "hotkey": "F12"}
     ]
 }

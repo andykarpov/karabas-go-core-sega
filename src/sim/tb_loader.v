@@ -23,13 +23,14 @@ reg [7:0] file_data = 0;
 wire ext_reset_n, ext_bootdone, ext_data_ack, loading;
 wire [15:0] ext_data;
 wire [2:0] hdr_region;
+wire [6:0] sav_sectors;
 reg ext_data_req = 1;
 
 sega_loader dut (
 	.clk(clk), .file_active(file_active), .file_wr(file_wr), .file_addr(file_addr),
 	.file_data(file_data), .ext_reset_n(ext_reset_n), .ext_bootdone(ext_bootdone),
 	.ext_data(ext_data), .ext_data_ack(ext_data_ack), .ext_data_req(ext_data_req),
-	.hdr_region(hdr_region), .loading(loading)
+	.hdr_region(hdr_region), .sav_sectors(sav_sectors), .loading(loading)
 );
 
 // the file
@@ -61,6 +62,7 @@ always @(posedge clk) begin
 	end
 end
 
+reg [31:0] sav_end = 0;
 task load;
 	input integer nb, byte_clocks;
 	input [23:0] region;    // three bytes at 1F0
@@ -69,6 +71,12 @@ task load;
 		n_bytes = nb;
 		for (i = 0; i < nb; i = i + 1) rom[i] = (i * 7 + 3) & 8'hFF;
 		if (nb > 16'h1F2) begin rom[16'h1F0] = region[23:16]; rom[16'h1F1] = region[15:8]; rom[16'h1F2] = region[7:0]; end
+		// the save RAM of the header: "RA" F8 20, 200001 .. 203FFF (8 KB, 16 sectors) unless sav_end = 0
+		if (nb > 16'h1BB && sav_end != 0) begin
+			rom[16'h1B0] = "R"; rom[16'h1B1] = "A"; rom[16'h1B2] = 8'hF8; rom[16'h1B3] = 8'h20;
+			{ rom[16'h1B4], rom[16'h1B5], rom[16'h1B6], rom[16'h1B7] } = 32'h00200001;
+			{ rom[16'h1B8], rom[16'h1B9], rom[16'h1BA], rom[16'h1BB] } = sav_end;
+		end
 		@(posedge clk) file_active <= 1;
 		repeat (20) @(posedge clk);
 		for (i = 0; i < nb; i = i + 1) begin
@@ -89,8 +97,15 @@ initial begin
 	if (!ext_bootdone) begin $display("FAIL: bootdone low before the first file"); errors = errors + 1; end
 	load(1024, 14, "JUE");          // fast bytes (14 clocks: faster than the writes, the FIFO fills)
 	if (hdr_region != 3'b111) begin $display("FAIL: region %b for JUE", hdr_region); errors = errors + 1; end
-	load(1001, 30, "E  ");          // odd size, slow bytes
+	if (sav_sectors != 0) begin $display("FAIL: %0d save sectors without RA", sav_sectors); errors = errors + 1; end
+	sav_end = 32'h00203FFF;
+	load(1001, 30, "E  ");          // odd size, slow bytes; save RAM 8 KB
+	if (sav_sectors != 16) begin $display("FAIL: %0d save sectors for 8 KB", sav_sectors); errors = errors + 1; end
 	if (hdr_region != 3'b100) begin $display("FAIL: region %b for E", hdr_region); errors = errors + 1; end
+	sav_end = 32'h0020FFFF;
+	load(600, 20, "4  ");           // save RAM 32 KB: 64 sectors
+	if (sav_sectors != 64) begin $display("FAIL: %0d save sectors for 32 KB", sav_sectors); errors = errors + 1; end
+	sav_end = 0;
 	load(600, 20, "4  ");           // new style digit: 4 = USA
 	if (hdr_region != 3'b010) begin $display("FAIL: region %b for 4", hdr_region); errors = errors + 1; end
 	load(600, 20, "A  ");           // A = 1010: bit 3 Europe, bit 0 (Japan) clear

@@ -5,9 +5,11 @@
  sega_fb.v
 
  The picture of the VDP through a frame buffer in the SRAM of the board, out as 1024 x 768 at
- 60 Hz (VESA, 65 MHz): every source line 3 output lines, the source width (320 in H40, 256 in H32)
+ 60 Hz (VESA, 65 MHz): every source line 3 output lines, the source width (320 in H40, 256 in H32,
+ more with the border of the VDP: up to 400 pixels and 256 lines are kept)
  scaled to 960 output pixels (a DDA: the source pixel advances W / 960 per output pixel, 3 in H40,
  3.75 in H32), the picture in the middle (32 pixels left and right, (768 - 3 h) / 2 lines above).
+  With more than 256 lines (PAL with the border, 288) the scale is 2 x 2 instead: 640 wide, 576 lines.
  The output does not follow the 50 / 59.9 Hz of the VDP: three buffers, the reader shows the last
  complete frame (repeated or skipped as the rates differ), so no frame is torn.
 
@@ -20,7 +22,7 @@
  the address two clocks (37 ns) and takes MD at the second edge, back to back every two clocks; a
  write is four clocks: /OE off with the address, MD driven and /WE low, /WE high, MD released. A
  pixel comes at most every 8 clocks (H40), so the writes take half the time at most and the line
- reads the rest: 320 words in less than 20 us.
+ reads the rest: 320 words in less than 20 us (400 with the border: 25 us of the 62 us there are).
 
  Read side (clk_65): the VESA timing 1344 x 806 (1024 + 24 + 136 + 160, 768 + 3 + 6 + 29); at the
  start of every frame the reader takes the last complete buffer with its size. A source line is
@@ -71,6 +73,7 @@ wire       req_t_65;
 wire [8:0] req_line_65;
 wire       req_lbuf_65;
 wire [1:0] req_fbuf_65;
+wire [8:0] req_w_65;
 
 // pending pixel
 reg        pw = 1'b0;
@@ -94,7 +97,7 @@ always @(posedge clk) begin
 	hbl_d <= hbl;
 	vbl_d <= vbl;
 	if (ce_pix && !hbl && !vbl) begin
-		if (wx < 9'd320 && wy < 9'd240) begin
+		if (wx < 9'd400 && wy < 9'd320) begin
 			pw <= 1'b1;
 			pw_addr <= { wbuf, wy, wx };
 			pw_data <= { r, g, b };
@@ -104,7 +107,7 @@ always @(posedge clk) begin
 	if (hbl && !hbl_d) begin
 		if (wx != 9'd0) begin
 			if (wy != 9'd511) wy <= wy + 9'd1;
-			if (wx > wwidth) wwidth <= wx > 9'd320 ? 9'd320 : wx;
+			if (wx > wwidth) wwidth <= wx > 9'd400 ? 9'd400 : wx;
 		end
 		wx <= 9'd0;
 	end
@@ -113,7 +116,7 @@ always @(posedge clk) begin
 			last <= wbuf;
 			have <= 1'b1;
 			last_w <= wwidth;
-			last_h <= wy > 9'd240 ? 9'd240 : wy;
+			last_h <= wy > 9'd320 ? 9'd320 : wy;
 			// the next buffer: not the one just completed, not the one the reader shows
 			if (wbuf != rd_cur)
 				wbuf <= 2'd3 - wbuf - rd_cur;
@@ -132,6 +135,7 @@ reg [2:0]  req_s = 3'd0;
 reg        job = 1'b0;
 reg [8:0]  job_line = 9'd0, job_x = 9'd0;
 reg        job_lbuf = 1'b0;
+reg [8:0]  job_w = 9'd320;
 reg [1:0]  job_fbuf = 2'd0;
 
 
@@ -151,6 +155,7 @@ always @(posedge clk) begin
 		job <= 1'b1;
 		job_line <= req_line_65;
 		job_lbuf <= req_lbuf_65;
+		job_w <= req_w_65;
 		job_fbuf <= req_fbuf_65;
 		job_x <= 9'd0;
 	end
@@ -169,7 +174,7 @@ always @(posedge clk) begin
 			MA <= { 1'b0, job_fbuf, job_line, job_x };
 			rd_x <= job_x;
 			rd_lbuf <= job_lbuf;
-			if (job_x == 9'd319) job <= 1'b0;
+			if (job_x + 9'd1 >= job_w) job <= 1'b0;
 			job_x <= job_x + 9'd1;
 			st <= S_R1;
 		end
@@ -229,7 +234,9 @@ kg_sdpram #(.DW(12), .AW(10)) line_buf (
 
 localparam H_TOTAL = 11'd1344, H_SYNC0 = 11'd1048, H_SYNC1 = 11'd1184;
 localparam V_TOTAL = 10'd806,  V_SYNC0 = 10'd771,  V_SYNC1 = 10'd777;
-localparam X0 = 11'd32, XW = 11'd960;
+// the scale: 3 x 3 (960 wide) up to 256 lines, else 2 x 2 (640 wide: 288 lines of PAL with the border)
+reg [10:0] X0 = 11'd32, XW = 11'd960;
+reg [1:0]  vlast = 2'd2;   // the last output line of a source line: 2 (3 lines) or 1 (2 lines)
 
 reg [10:0] hc = 11'd0;
 reg [9:0]  vc = 10'd0;
@@ -241,7 +248,12 @@ reg  [1:0]  rbuf = 2'd0;
 reg         rhave = 1'b0;
 reg  [8:0]  rw = 9'd320, rh = 9'd224;
 reg  [9:0]  y0 = 10'd48;
+reg  [9:0]  vc_req0 = 10'd45, vc_start = 10'd47;   // the line of the first request, of the start: before y0
 assign rbuf_65 = rbuf;
+
+wire [9:0] h_n = pub_cur[8:0] == 9'd0 ? 10'd224 : { 1'b0, pub_cur[8:0] };
+wire       big_n = h_n > 10'd256;
+wire [9:0] y0_n = (10'd768 - (big_n ? h_n * 10'd2 : h_n * 10'd3)) >> 1;
 
 // line requests
 reg        req_t = 1'b0;
@@ -250,6 +262,7 @@ reg        req_lbuf = 1'b0;
 assign req_t_65 = req_t;
 assign req_line_65 = req_line;
 assign req_lbuf_65 = req_lbuf;
+assign req_w_65 = rw;
 assign req_fbuf_65 = rbuf;
 
 // vertical position in the picture
@@ -284,18 +297,23 @@ always @(posedge clk_65) begin
 		rbuf  <= pub_cur[19:18];
 		rw    <= pub_cur[17:9] == 9'd0 ? 9'd320 : pub_cur[17:9];
 		rh    <= pub_cur[8:0] == 9'd0 ? 9'd224 : pub_cur[8:0];
-		y0    <= (10'd768 - (pub_cur[8:0] == 9'd0 ? 10'd672 : { 1'b0, pub_cur[8:0] } * 10'd3)) >> 1;
+		y0    <= y0_n;
+		vc_req0 <= y0_n >= 10'd3 ? y0_n - 10'd3 : y0_n + V_TOTAL - 10'd3;
+		vc_start <= y0_n >= 10'd1 ? y0_n - 10'd1 : V_TOTAL - 10'd1;
+		X0 <= big_n ? 11'd192 : 11'd32;
+		XW <= big_n ? 11'd640 : 11'd960;
+		vlast <= big_n ? 2'd1 : 2'd2;
 	end
 
 	// lines: at the end of the line before (hc = H_SYNC0, the picture of the line is out)
 	if (hc == H_SYNC0) begin
-		if (vc + 10'd3 == y0) begin
+		if (vc == vc_req0) begin
 			// three lines ahead: source line 0
 			req_line <= 9'd0;
 			req_lbuf <= 1'b0;
 			req_t <= ~req_t;
 		end
-		if (vc + 10'd1 == y0) begin
+		if (vc == vc_start) begin
 			// the next line is the first of the picture; line 1 into the other buffer
 			in_img <= 1'b1;
 			sy <= 9'd0;
@@ -307,7 +325,7 @@ always @(posedge clk_65) begin
 			end
 		end
 		else if (in_img) begin
-			if (sub == 2'd2) begin
+			if (sub == vlast) begin
 				sub <= 2'd0;
 				if (sy + 9'd1 == rh)
 					in_img <= 1'b0;
@@ -323,8 +341,6 @@ always @(posedge clk_65) begin
 			else
 				sub <= sub + 2'd1;
 		end
-		if (vc == V_TOTAL - 10'd1)
-			in_img <= 1'b0;
 	end
 
 	// stage 1: the address of the source pixel
@@ -333,8 +349,8 @@ always @(posedge clk_65) begin
 		sx <= 9'd0;
 	end
 	else if (hc >= X0 && hc < X0 + XW) begin
-		if (acc + { 2'b0, rw } >= 11'd960) begin
-			acc <= acc + { 2'b0, rw } - 11'd960;
+		if (acc + { 2'b0, rw } >= XW) begin
+			acc <= acc + { 2'b0, rw } - XW;
 			sx <= sx + 9'd1;
 		end
 		else

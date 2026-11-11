@@ -91,6 +91,9 @@ w(0x33FC, 0x0100); l(0xA11200)                                   # move.w #$0100
 psg(0x80 | 0x0E)
 psg(0x0F)
 psg(0x90)
+# the save RAM (the header has it: "RA", 200001 .. 203FFF): four bytes at its first odd addresses
+for i, v in enumerate([0x5A, 0xA5, 0xC3, 0x3C]):
+    w(0x13FC, v); l(0x200001 + 2 * i)                            # move.b #v,$200001+2i
 w(0x60FE)                                                        # bra.s *
 
 rom = bytearray(b'\xff' * 0x10000)
@@ -101,6 +104,7 @@ hdr = (b'SEGA MEGA DRIVE ' + b'(C)KRBS 2026.NOV' + b'KARABAS SIM TEST'.ljust(48)
        b'KARABAS SIM TEST'.ljust(48) + b'GM 00000000-00' + b'\0\0' + b'J'.ljust(16) +
        struct.pack('>IIII', 0, 0xFFFF, 0xFF0000, 0xFFFFFF))
 rom[0x100:0x100 + len(hdr)] = hdr
+rom[0x1B0:0x1BC] = b'RA\xf8\x20' + struct.pack('>II', 0x200001, 0x203FFF)
 rom[0x1F0:0x1F3] = b'JUE'
 rom[0x200:0x200 + len(code)] = code
 open(sys.argv[1], 'wb').write(rom)

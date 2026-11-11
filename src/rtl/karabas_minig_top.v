@@ -24,8 +24,12 @@
  The cartridge: the file of the core (type fileloader: .bin, .gen, .md in the sega folder) through the file loader
  of kg_mcu into the boot interface of fpgagen (sega_loader); the region of its header for Auto.
 
+ Save RAM: the save RAM of the header ("RA" at 1B0) in a .sav file next to the game (the saves dir of
+ the core folder) through kg_bk_ram on img slot 0: loaded before the CPU starts, saved after writes.
+
  Soft switches (core.json osd order):
-   0 Region (Auto / JP / US / EU)   1 Pad (6 button / 3 button)   2 Swap joysticks   3 Reset
+   0 Region (Auto / JP / US / EU)   1 Pad (6 button / 3 button)   2 Swap joysticks   3 Border
+   4 Reset
 */
 
 module karabas_minig_top (
@@ -199,6 +203,12 @@ wire [15:0] softsw_command, osd_command;
 wire mcu_busy;
 wire dvi_only;
 wire ft_cs_n, ft_mosi, ft_spi_on, sd2_cs_n, sd2_mosi;
+wire [7:0] img_mounted, img_data, img_result, img_flush;
+wire [63:0] img_size;
+wire img_data_wr, img_result_wr, img_q_wr, img_q_ack;
+wire [8:0] img_data_addr;
+wire [15:0] img_sum;
+wire [23:0] img_q_di;
 
 kg_mcu #(
 	.BURST_MAX_MHZ(32),  // Rev.G has MCU_SCK on a global clock pin
@@ -207,8 +217,9 @@ kg_mcu #(
 	.ENABLE_UART(0),
 	.ENABLE_MATRIX(0),
 	.ENABLE_DEBUG(0),
-	.ENABLE_IMG(0),
+	.ENABLE_IMG(1),      // the file mounter: the .sav file of kg_bk_ram
 	.ENABLE_IMG_WP(0),
+	.ENABLE_BK(1),       // kg_bk_ram: the save RAM of the cartridge (caps bit 3: flushes before a new game)
 	.ENABLE_MIDI(0),
 	.ENABLE_FILE(1),     // the cartridge (the file of the fileloader core)
 	.FILE_CMDS(1),       // FILELOADER / FILEBANK / FILEDATA, as snes / nes
@@ -300,18 +311,19 @@ kg_mcu #(
 	.MATRIX_CMD_WR(1'b0),
 	.DEBUG_ADDR(16'h0000),
 	.DEBUG_DATA(16'h0000),
-	.IMG_MOUNTED(),
-	.IMG_SIZE(),
+	.IMG_MOUNTED(img_mounted),
+	.IMG_SIZE(img_size),
 	.IMG_WP(),
-	.IMG_DATA_WR(),
-	.IMG_DATA_ADDR(),
-	.IMG_DATA(),
-	.IMG_RESULT_WR(),
-	.IMG_RESULT(),
-	.IMG_SUM(),
-	.IMG_Q_WR(1'b0),
-	.IMG_Q_DI(24'h000000),
-	.IMG_Q_ACK(),
+	.IMG_DATA_WR(img_data_wr),
+	.IMG_DATA_ADDR(img_data_addr),
+	.IMG_DATA(img_data),
+	.IMG_RESULT_WR(img_result_wr),
+	.IMG_RESULT(img_result),
+	.IMG_SUM(img_sum),
+	.IMG_FLUSH(img_flush),
+	.IMG_Q_WR(img_q_wr),
+	.IMG_Q_DI(img_q_di),
+	.IMG_Q_ACK(img_q_ack),
 	.FDD_CHNG_REQ(1'b0),
 	.FDD_CHNG_DS(2'd0),
 	.PRN_DATA(8'h00),
@@ -331,8 +343,8 @@ assign SD_CLK = mcu_sck_ibufg;
 
 // ------------------------------------------------------------------ soft switches
 
-wire [4*8-1:0] sw;
-kg_soft_switches #(.N(4)) soft_switches (
+wire [5*8-1:0] sw;
+kg_soft_switches #(.N(5)) soft_switches (
 	.clk(mclk),
 	.command(softsw_command),
 	.regs(sw),
@@ -341,13 +353,15 @@ kg_soft_switches #(.N(4)) soft_switches (
 wire [1:0] sw_region = sw[0*8 +: 2];   // 0 Auto, 1 JP, 2 US, 3 EU
 wire sw_3button = sw[1*8];
 wire sw_swap = sw[2*8];
-wire sw_reset = sw[3*8];
+wire sw_border = sw[3*8];
+wire sw_reset = sw[4*8];
 
 // ------------------------------------------------------------------ cartridge loader
 
 wire ext_reset_n, ext_bootdone, ext_data_ack, ext_data_req;
 wire [15:0] ext_data;
 wire [2:0] hdr_region;   // { EU, US, JP } of the header
+wire [6:0] sav_sectors;  // the save RAM of the header
 sega_loader loader (
 	.clk(mclk),
 	.file_active(file_active),
@@ -360,6 +374,7 @@ sega_loader loader (
 	.ext_data_ack(ext_data_ack),
 	.ext_data_req(ext_data_req),
 	.hdr_region(hdr_region),
+	.sav_sectors(sav_sectors),
 	.loading()
 );
 
@@ -378,13 +393,82 @@ always @(posedge mclk)
 
 // ext_sw of fpgagen: 3 PSG off, 4 FM off, 5 export, 6 PAL, 9 VRAM speed emulation (MiST default on),
 // 10 fake EEPROM, 13 HiFi PCM, 14 CPU turbo, 15 border, 0 CRAM dots
-wire [15:0] ext_sw = { 6'b000000, 1'b1, 2'b00, pal, rg_export, 5'b00000 };
+wire [15:0] ext_sw = { sw_border, 5'b00000, 1'b1, 2'b00, pal, rg_export, 5'b00000 };
 
-// reset: the PLL, the Reset item (the boot FSM of fpgagen holds the CPU while a cartridge loads)
+// ------------------------------------------------------------------ save RAM (.sav)
+
+// kg_bk_ram on img slot 0: started when a cartridge is in (ext_bootdone rises) with the save RAM size
+// of its header; the CPU is held in reset until the .sav file is in the save RAM. A new file resets it
+// (the firmware flushes the old one before it loads another game).
+reg file_active_d = 1'b0, bootdone_d = 1'b1, bk_reset = 1'b0, bk_start = 1'b0;
+always @(posedge mclk) begin
+	file_active_d <= file_active;
+	bootdone_d <= ext_bootdone;
+	bk_reset <= file_active && !file_active_d;
+	bk_start <= ext_bootdone && !bootdone_d;
+end
+
+wire bk_busy, bk_mem_req, bk_mem_we, bk_mem_ack;
+wire [14:0] bk_mem_addr;
+wire [7:0] bk_mem_din, bk_mem_dout;
+wire sav_wr;
+wire [15:1] sav_a;
+kg_bk_ram #(
+	.SLOT(3'd0),
+	.IDLE_CLOCKS(27'd54000000),    // ~1 s at 54 MHz: save after the last write
+	.MAX_CLOCKS(27'd108000000),    // ~2 s: at the latest after the first write
+	.MOUNT_CLOCKS(27'd54000000),   // ~1 s: no answer to CMD_BK_MOUNT, go on without a save
+	.GRACE_CLOCKS(27'd540000),     // ~10 ms: no file
+	.TIMEOUT(24'd10800000)         // img_sdc: ~200 ms
+) bk_ram (
+	.clk(mclk),
+	.reset(bk_reset),
+	.start(bk_start),
+	.size(sav_sectors),
+	.kind(8'h00),
+	.busy(bk_busy),
+	.mounted(),
+	.saving(),
+	.save_error(),
+	.wr(sav_wr),
+	.wr_addr(sav_a),
+	.mem_req(bk_mem_req),
+	.mem_we(bk_mem_we),
+	.mem_addr(bk_mem_addr),
+	.mem_din(bk_mem_din),
+	.mem_ack(bk_mem_ack),
+	.mem_dout(bk_mem_dout),
+	.img_mounted(img_mounted),
+	.img_size(img_size),
+	.img_data_wr(img_data_wr),
+	.img_data_addr(img_data_addr),
+	.img_data(img_data),
+	.img_result_wr(img_result_wr),
+	.img_result(img_result),
+	.img_sum(img_sum),
+	.img_flush(img_flush),
+	.img_q_wr(img_q_wr),
+	.img_q_di(img_q_di),
+	.img_q_ack(img_q_ack)
+);
+
+wire bk_req, bk_ack, bk_we;
+wire [15:1] bk_a;
+wire [7:0] bk_d;
+wire [15:0] bk_q;
+sega_bk bk (
+	.clk(mclk),
+	.mem_req(bk_mem_req), .mem_we(bk_mem_we), .mem_addr(bk_mem_addr), .mem_din(bk_mem_din),
+	.mem_ack(bk_mem_ack), .mem_dout(bk_mem_dout),
+	.bk_req(bk_req), .bk_ack(bk_ack), .bk_we(bk_we), .bk_a(bk_a), .bk_d(bk_d), .bk_q(bk_q)
+);
+
+// reset: the PLL, the Reset item, the load of the .sav file (the boot FSM of fpgagen holds the CPU
+// while a cartridge loads)
 reg [7:0] rst_cnt = 8'd0;
 reg gen_reset_n = 1'b0;
 always @(posedge mclk) begin
-	if (areset || sw_reset)
+	if (areset || sw_reset || bk_busy)
 		rst_cnt <= 8'd0;
 	else if (rst_cnt != 8'hFF)
 		rst_cnt <= rst_cnt + 8'd1;
@@ -394,9 +478,17 @@ end
 // ------------------------------------------------------------------ pads
 
 // mcu JOY_L / JOY_R: [0] connected, [1] up, [2] down, [3] left, [4] right, [5] start, [6] A, [7] B,
-// [8] C, [9] X, [10] Y, [11] Z, [12] mode (1 = pressed); gen_ctrl wants them active low
-wire [12:0] pad1 = sw_swap ? joy_r : joy_l;
-wire [12:0] pad2 = sw_swap ? joy_l : joy_r;
+// [8] C, [9] X, [10] Y, [11] Z, [12] mode (1 = pressed), ORed with the keyboard (sega_kbd: arrows,
+// Z X C / A S D, Enter, Space; I J K L, U O P / 7 8 9, M, N); gen_ctrl wants them active low
+wire [12:0] kb_l, kb_r;
+sega_kbd kbd (
+	.clk(mclk),
+	.kb_dat0(kb_dat0), .kb_dat1(kb_dat1), .kb_dat2(kb_dat2),
+	.kb_dat3(kb_dat3), .kb_dat4(kb_dat4), .kb_dat5(kb_dat5),
+	.kb_l(kb_l), .kb_r(kb_r)
+);
+wire [12:0] pad1 = sw_swap ? (joy_r | kb_r) : (joy_l | kb_l);
+wire [12:0] pad2 = sw_swap ? (joy_l | kb_l) : (joy_r | kb_r);
 wire [7:0] douta, oea, dina, doutb, oeb, dinb;
 
 gen_ctrl ctrl_a (
@@ -478,7 +570,16 @@ fpgagen_sdram_top gen (   // USE_SVP false by default (karabas)
 	.ext_data(ext_data),
 	.ext_data_req(ext_data_req),
 	.ext_data_ack(ext_data_ack),
-	.ext_sw(ext_sw)
+	.ext_sw(ext_sw),
+
+	.bk_req(bk_req),
+	.bk_ack(bk_ack),
+	.bk_we(bk_we),
+	.bk_a(bk_a),
+	.bk_d(bk_d),
+	.bk_q(bk_q),
+	.sav_wr(sav_wr),
+	.sav_a(sav_a)
 );
 assign SDR_BA = { sdr_ba1, sdr_ba0 };
 assign SDR_DQM = { sdr_udqm, sdr_ldqm };

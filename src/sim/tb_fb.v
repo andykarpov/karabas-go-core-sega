@@ -3,7 +3,8 @@
 
 /*
  tb_fb.v - sega_fb on an asynchronous SRAM model (10 ns) with a synthetic VDP: lines of 3420 MCLK,
- W pixels on CE_PIX every 8 (H40, W = 320) or 10 (H32, W = 256) MCLK, H lines of 262 (V28). The
+ W pixels on CE_PIX every 8 (H40, W = 320) or 10 (H32, W = 256) MCLK, H lines of 262 (V28; +w=N
+ +h=N for other sizes, e.g. 348 x 256 as with the border: the picture then starts at line 0). The
  pixel of (x, y) is { x[3:0], y[3:0], x[7:4] ^ y[7:4] }. Checked in output frame 3 (by then a
  complete frame is shown): every pixel of 1024 x 768 is the source pixel (floor(k W / 960), oy / 3)
  inside the picture (32 + k, y0 + oy) and black outside; the frame is 1024 x 768 with 806 lines.
@@ -22,6 +23,9 @@ integer W, PIXDIV, H;
 initial begin
 	if ($test$plusargs("h32")) begin W = 256; PIXDIV = 10; end else begin W = 320; PIXDIV = 8; end
 	H = 224;
+	// +w=N +h=N: other sizes (the border of the VDP: 348 x 256 and the like)
+	if ($value$plusargs("w=%d", W)) ;
+	if ($value$plusargs("h=%d", H)) ;
 end
 
 // ------------------------------------------------------------------ synthetic VDP
@@ -30,13 +34,13 @@ reg hbl = 1, vbl = 1, ce_pix = 0;
 integer hc = 0, vc = 0, px = 0;
 always @(posedge clk) begin
 	hc <= hc == 3419 ? 0 : hc + 1;
-	if (hc == 3419) vc <= vc == 261 ? 0 : vc + 1;
+	if (hc == 3419) vc <= vc == (H > 256 ? 312 : 261) ? 0 : vc + 1;
 	ce_pix <= (hc % PIXDIV) == 0;
 	// active area: from MCLK 200, W pixels
 	hbl <= !(hc >= 200 && hc < 200 + W * PIXDIV);
-	vbl <= !(vc >= 10 && vc < 10 + H);
+	vbl <= !(vc >= 3 && vc < 3 + H);
 	px = (hc - 200) / PIXDIV;
-	{ r, g, b } <= src(px, vc - 10);
+	{ r, g, b } <= src(px, vc - 3);
 end
 // the expected pixel of source (x, y)
 function [11:0] src;
@@ -69,7 +73,7 @@ sega_fb dut (
 );
 
 // ------------------------------------------------------------------ check
-integer oframe = 0, ox = 0, oy = 0, lines = 0, errors = 0, checked = 0, k, sy, y0;
+integer oframe = 0, ox = 0, oy = 0, lines = 0, errors = 0, checked = 0, k, sy, y0, S, XW;
 reg vs_d = 0, de_d = 0, hs_d = 0;
 reg [11:0] exp_px;
 always @(posedge clk_65) begin
@@ -86,13 +90,16 @@ always @(posedge clk_65) begin
 	end
 	if (de) begin
 		if (oframe == 3) begin
-			y0 = (768 - 3 * H) / 2;
-			k = ox - 32;
-			if (oy >= y0 && oy < y0 + 3 * H && k >= 0 && k < 960) begin
-				sy = (oy - y0) / 3;
-				exp_px = src((k * W) / 960, sy);
+			// 3 x 3 (960 wide) up to 256 lines, else 2 x 2 (640 wide)
+			S = H > 256 ? 2 : 3;
+			XW = S * 320;
+			y0 = (768 - S * H) / 2;
+			k = ox - (1024 - XW) / 2;
+			if (oy >= y0 && oy < y0 + S * H && k >= 0 && k < XW) begin
+				sy = (oy - y0) / S;
+				exp_px = src((k * W) / XW, sy);
 				if (rgb != { exp_px[11:8], exp_px[11:8], exp_px[7:4], exp_px[7:4], exp_px[3:0], exp_px[3:0] }) begin
-					if (errors < 10) $display("FAIL: out %0d,%0d = %06x, expected source %0d,%0d = %03x", ox, oy, rgb, (k * W) / 960, sy, exp_px);
+					if (errors < 10) $display("FAIL: out %0d,%0d = %06x, expected source %0d,%0d = %03x", ox, oy, rgb, (k * W) / XW, sy, exp_px);
 					errors = errors + 1;
 				end
 			end
