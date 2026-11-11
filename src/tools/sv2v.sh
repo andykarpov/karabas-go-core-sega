@@ -29,3 +29,17 @@ VHDL="fpgagen/sdram.vhd jt12/hdl/jt12.vhd jt89/hdl/jt89.vhd fpgagen/vdp_common.v
   for f in $JT12; do echo "verilog work \"rtl/jt12/hdl/$f\""; done
   for f in $JT89; do echo "verilog work \"rtl/jt89/hdl/$f\""; done
   for f in $VHDL; do echo "vhdl work \"rtl/$f\""; done; } > ../sega.prj
+# karabas_minig.prj: the board modules (as core-macplus), the Genesis, the glue of the board
+MODS="mem/kg_spram.v mem/kg_tdpram.v mem/kg_sdpram.v mem/kg_fifo.v mem/kg_async_fifo.v
+ ctl/kg_soft_switches.v ctl/kg_sync.v mcu/kg_spi_slave.v mcu/kg_burst_rx.v mcu/kg_mcu_link.v
+ mcu/kg_mcu_ctl.v mcu/kg_mcu_hid.v mcu/kg_mcu_loader.v mcu/kg_mcu_rtc.v mcu/kg_mcu_uart.v
+ mcu/kg_mcu_img.v mcu/kg_mcu_debug.v mcu/kg_mcu_esp.v mcu/img_sdc.v mcu/kg_mcu.v clk/kg_pll.v
+ clk/kg_dcm.v audio/kg_pcm5102.v video/osd/kg_pix_doubler.v video/osd/kg_osd_overlay.v"
+HDMI="zhdmi_tmds_encoder zhdmi_signaling zhdmi_island_encoder zhdmi_audio_packetizer zhdmi_packet_gen
+ zhdmi_tmds_serializer_spartan6 dvi_encoder dvi zhdmi_tx"
+{ for f in $MODS; do echo "verilog work \"../modules/rtl/$f\""; done
+  for f in $HDMI; do echo "vhdl work \"../modules/rtl/video/hdmi/$f.vhd\""; done
+  cat ../sega.prj
+  echo 'vhdl work "rtl/fpgagen/gen_ctrl.vhd"'
+  for f in karabas/sega_loader.v karabas/sega_fb.v karabas_minig_top.v; do echo "verilog work \"rtl/$f\""; done
+} > ../karabas_minig.prj

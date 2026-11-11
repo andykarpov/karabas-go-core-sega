@@ -8,6 +8,9 @@ boards (Xilinx Spartan-6 XC6SLX25). Work in progress: see `docs/PLAN.md` (in Rus
 - fpgagen: Gregory Estrade (Torlus), Gyorgy Szombathelyi and the MiST contributors.
 - fx68k: Jorge Cwik. T80: Daniel Wallner. jt12 / jt89: Jose Tejada (jotego).
 - Port to Karabas: Andy Karpov, 2026.
+- xdemax made the first attempt at a Mega Drive core for Karabas (with DeepSeek); this core is
+  written anew, but the lessons of that attempt (the boot interface of fpgagen, the VRAM / DMA
+  priorities, the video path) went into its plan.
 
 ## License
 

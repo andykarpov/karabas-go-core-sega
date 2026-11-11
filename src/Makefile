@@ -16,7 +16,7 @@
 
 ISE_SETTINGS ?= /opt/Xilinx/14.7/ISE_DS/settings64.sh
 PART = xc6slx25-ftg256-2
-BOARDS = go mini minig
+BOARDS = minig   # go, mini: phase 4
 
 SHELL = /bin/bash
 .SHELLFLAGS = -e -o pipefail -c
