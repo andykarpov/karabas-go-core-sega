@@ -120,6 +120,18 @@ port(
 	                                                   -- 14 - CPU Turbo
 	                                                   -- 15 - Border
 	                                                   -- 0 - CRAM dots
+	;
+	-- karabas: the backup RAM of the cartridge for kg_bk_ram (the .sav file): a port into the save
+	-- RAM region of the SDRAM (bk_req toggles, done when bk_ack equals it; the low byte of a word),
+	-- and the writes of the 68000 to the save RAM (sav_wr one MCLK, sav_a the word = the byte of the file)
+	bk_req       : in  std_logic := '0';
+	bk_ack       : out std_logic;
+	bk_we        : in  std_logic := '0';
+	bk_a         : in  std_logic_vector(15 downto 1) := (others => '0');
+	bk_d         : in  std_logic_vector(7 downto 0) := (others => '0');
+	bk_q         : out std_logic_vector(15 downto 0);
+	sav_wr       : out std_logic;
+	sav_a        : out std_logic_vector(15 downto 1)
 );
 end entity;
 
@@ -157,6 +169,7 @@ signal sram_d : std_logic_vector(15 downto 0);
 signal sram_q : std_logic_vector(15 downto 0);
 signal sram_l_n : std_logic;
 signal sram_u_n : std_logic;
+signal sram_req_d : std_logic := '0'; -- karabas
 
 -- VRAM
 signal vram_req : std_logic;
@@ -312,8 +325,28 @@ port map(
 	svp_rom_req  => svp_rom_req,
 	svp_rom_ack  => svp_rom_ack,
 	svp_rom_a    => "000" & svp_rom_a,
-	svp_rom_q    => svp_rom_q
+	svp_rom_q    => svp_rom_q,
+
+	bk_req       => bk_req,   -- karabas
+	bk_ack       => bk_ack,
+	bk_we        => bk_we,
+	bk_a         => bk_a,
+	bk_d         => bk_d,
+	bk_q         => bk_q
 );
+
+-- karabas: a write of the 68000 to the save RAM = a new request of the sram port with sram_we
+process(MCLK)
+begin
+	if rising_edge(MCLK) then
+		sram_req_d <= sram_req;
+		sav_wr <= '0';
+		if sram_req /= sram_req_d and sram_we = '1' then
+			sav_wr <= '1';
+			sav_a <= sram_a;
+		end if;
+	end if;
+end process;
 
 gen_cart : entity work.gen_cart
 port map (

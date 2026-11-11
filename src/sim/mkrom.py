@@ -5,9 +5,15 @@ four tiles of one colour each, fills plane A with four horizontal bands of 7 cel
 colour 1 red, 2 green, 3 blue, 4 white, releases the Z80 reset, sets PSG tone channel 0 to about
 440 Hz at full volume and loops. A frame is then 320 x 224 with the bands at lines 0, 56, 112, 168.
 
-usage: mkrom.py out.bin
+With --linescroll the picture is instead a test of the line scroll (HSCROLL mode 3, one table entry
+per line, as Earthworm Jim's heat effects use it): plane A is empty but for tile 5 (a red column at
+its pixel 0) in cell column 0 of every row, and line y has the horizontal scroll (7 y) mod 300, so the
+only red pixel of line y is at x = (7 y) mod 300 (check_linescroll.py).
+
+usage: mkrom.py out.bin [--linescroll]
 """
 import struct, sys
+LINESCROLL = '--linescroll' in sys.argv[2:]
 
 code = bytearray()
 
@@ -41,7 +47,7 @@ w(0x46FC, 0x2700)                                                # move.w #$2700
 lea_a0(VDP_DATA)
 lea_a1(VDP_CTRL)
 for r, v in [(0, 0x04), (1, 0x44), (2, 0x30), (3, 0x00), (4, 0x07), (5, 0x00), (7, 0x00),
-             (10, 0xFF), (11, 0x00), (12, 0x81), (13, 0x3F), (15, 0x02), (16, 0x01), (17, 0x00), (18, 0x00)]:
+             (10, 0xFF), (11, 0x03 if LINESCROLL else 0x00), (12, 0x81), (13, 0x3F), (15, 0x02), (16, 0x01), (17, 0x00), (18, 0x00)]:
     vdp_reg(r, v)
 # palette 0: black, red, green, blue, white (CRAM: 0000 BBB0 GGG0 RRR0)
 ctrl_l(0xC0000000)
@@ -51,13 +57,31 @@ for c in [0x000, 0x00E, 0x0E0, 0xE00, 0xEEE]:
 ctrl_l(vram_write(0x0020))
 for n in range(1, 5):
     fill(0x1111 * n, 16)
-# plane A at C000, 64 x 32 cells: bands of 7 rows of tiles 1..4
-ctrl_l(vram_write(0xC000))
-for n in range(1, 5):
-    fill(n, 64 * 7)
-# horizontal and vertical scroll 0 (VRAM FC00, VSRAM 0)
-ctrl_l(vram_write(0xFC00))
-fill(0, 448)
+if not LINESCROLL:
+    # plane A at C000, 64 x 32 cells: bands of 7 rows of tiles 1..4
+    ctrl_l(vram_write(0xC000))
+    for n in range(1, 5):
+        fill(n, 64 * 7)
+    # horizontal and vertical scroll 0 (VRAM FC00, VSRAM 0)
+    ctrl_l(vram_write(0xFC00))
+    fill(0, 448)
+else:
+    # tile 5 at VRAM A0: pixel 0 of every row colour 1 (rows of two words: 1000, 0000)
+    ctrl_l(vram_write(0x00A0))
+    for row in range(8):
+        data_w(0x1000)
+        data_w(0x0000)
+    # plane A empty (tile 0), tile 5 in column 0 of rows 0..27
+    ctrl_l(vram_write(0xC000))
+    fill(0, 64 * 32)
+    for r in range(28):
+        ctrl_l(vram_write(0xC000 + r * 128))
+        data_w(5)
+    # the line scroll table: plane A of line y = (7 y) mod 300, plane B 0
+    ctrl_l(vram_write(0xFC00))
+    for y in range(224):
+        data_w((7 * y) % 300)
+        data_w(0)
 ctrl_l(0x40000010)                                               # VSRAM write 0
 fill(0, 40)
 # release the Z80 reset (A11200 = 0100): the sound mixer of fpgagen (jt12_genmix, PSG included) is
@@ -67,6 +91,9 @@ w(0x33FC, 0x0100); l(0xA11200)                                   # move.w #$0100
 psg(0x80 | 0x0E)
 psg(0x0F)
 psg(0x90)
+# the save RAM (the header has it: "RA", 200001 .. 203FFF): four bytes at its first odd addresses
+for i, v in enumerate([0x5A, 0xA5, 0xC3, 0x3C]):
+    w(0x13FC, v); l(0x200001 + 2 * i)                            # move.b #v,$200001+2i
 w(0x60FE)                                                        # bra.s *
 
 rom = bytearray(b'\xff' * 0x10000)
@@ -77,6 +104,7 @@ hdr = (b'SEGA MEGA DRIVE ' + b'(C)KRBS 2026.NOV' + b'KARABAS SIM TEST'.ljust(48)
        b'KARABAS SIM TEST'.ljust(48) + b'GM 00000000-00' + b'\0\0' + b'J'.ljust(16) +
        struct.pack('>IIII', 0, 0xFFFF, 0xFF0000, 0xFFFFFF))
 rom[0x100:0x100 + len(hdr)] = hdr
+rom[0x1B0:0x1BC] = b'RA\xf8\x20' + struct.pack('>II', 0x200001, 0x203FFF)
 rom[0x1F0:0x1F3] = b'JUE'
 rom[0x200:0x200 + len(code)] = code
 open(sys.argv[1], 'wb').write(rom)

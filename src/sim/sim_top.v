@@ -48,7 +48,28 @@ module sim_top (
 	output wire [15:0] cpu_dout,
 	output wire [15:0] cpu_din,
 	output wire        cpu_halted_n,
-	output wire        mrst_n
+	output wire        mrst_n,
+
+	// the backup RAM port as kg_bk_ram drives it (through sega_bk), and the save RAM writes of the 68000
+	input  wire        mem_req,
+	input  wire        mem_we,
+	input  wire [14:0] mem_addr,
+	input  wire [7:0]  mem_din,
+	output wire        mem_ack,
+	output wire [7:0]  mem_dout,
+	output wire        sav_wr,
+	output wire [15:1] sav_a
+);
+
+wire bk_req, bk_ack, bk_we;
+wire [15:1] bk_a;
+wire [7:0] bk_d;
+wire [15:0] bk_q;
+sega_bk bk (
+	.clk(mclk),
+	.mem_req(mem_req), .mem_we(mem_we), .mem_addr(mem_addr), .mem_din(mem_din),
+	.mem_ack(mem_ack), .mem_dout(mem_dout),
+	.bk_req(bk_req), .bk_ack(bk_ack), .bk_we(bk_we), .bk_a(bk_a), .bk_d(bk_d), .bk_q(bk_q)
 );
 
 assign cpu_a        = gen.fpgagen_i.fx68k_inst_i.eab;
@@ -119,7 +140,16 @@ fpgagen_sdram_top gen (
 	.ext_data     (ext_data),
 	.ext_data_req (ext_data_req),
 	.ext_data_ack (ext_data_ack),
-	.ext_sw       (ext_sw)
+	.ext_sw       (ext_sw),
+
+	.bk_req       (bk_req),
+	.bk_ack       (bk_ack),
+	.bk_we        (bk_we),
+	.bk_a         (bk_a),
+	.bk_d         (bk_d),
+	.bk_q         (bk_q),
+	.sav_wr       (sav_wr),
+	.sav_a        (sav_a)
 );
 
 sdram_model sdram (

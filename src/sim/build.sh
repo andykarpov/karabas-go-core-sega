@@ -10,7 +10,7 @@ HERE=$PWD
 mkdir -p $B/vhd
 VHDL=$(sed -n 's/^vhdl work "\(.*\)"/\1/p' $SRC/sega.prj)
 VLOG=$(sed -n 's/^verilog work "\(.*\)"/\1/p' $SRC/sega.prj)
-OWN="sim/sdram_model.v sim/sim_top.v"
+OWN="rtl/karabas/sega_bk.v sim/sdram_model.v sim/sim_top.v"
 GEN=$B/fpgagen.v
 newer() { [ ! -e "$1" ] || [ -n "$(cd $SRC && find $2 -newer sim/$1 2>/dev/null)" ]; }
 

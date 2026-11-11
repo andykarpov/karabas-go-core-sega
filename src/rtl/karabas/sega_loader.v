@@ -20,6 +20,10 @@
  The FIFO evens out the bursts of the mcu link against the SDRAM writes (~12 MCLK per word through
  the boot FSM; the link brings a word every ~27 MCLK at 32 MHz SPI): 16 words.
 
+ The save RAM of the header (1B0 "RA", 1B4..1B7 its start, 1B8..1BB its end, as 68000 addresses of
+ its bytes, every other one): sav_sectors = the sectors of 512 bytes of the .sav file (its bytes in
+ the order of the addresses), 0 without "RA"; at most 64 (32 KB, the save RAM window of fpgagen).
+
  The region of the header (bytes 1F0..1F2): the letters J / U / E, or one hex digit of the newer
  form (bit 0 Japan, bit 2 USA, bit 3 Europe); hdr_region = { e, u, j } of the last file. A copier
  header (.smd, 512 bytes) is not handled: plain .bin / .gen / .md files.
@@ -40,6 +44,7 @@ module sega_loader (
 	input  wire        ext_data_req,
 
 	output reg  [2:0]  hdr_region = 3'b010,   // { EU, US, JP } (US until a file says otherwise)
+	output reg  [6:0]  sav_sectors = 7'd0,    // the save RAM of the header in sectors (0: none)
 	output wire        loading
 );
 
@@ -59,6 +64,12 @@ reg ack_wait = 1'b0;
 
 reg push;
 reg [15:0] push_d;
+
+// header save RAM: 1B0..1BB
+reg [7:0] h_r = 8'd0, h_a = 8'd0;
+reg [31:0] h_start = 32'd0, h_end = 32'd0;
+wire [31:0] h_len = ((h_end - h_start) >> 1) + 32'd1;        // its bytes (every other address)
+wire [31:0] h_sec = (h_len + 32'd511) >> 9;
 
 // header region
 reg [2:0] reg_new = 3'b000;
@@ -94,6 +105,8 @@ always @(posedge clk) begin
 		ending <= 1'b0;
 		ack_wait <= 1'b0;
 		reg_new <= 3'b000;
+		h_r <= 8'd0;
+		h_a <= 8'd0;
 	end
 	else begin
 		if (rst_cnt != 4'd0) rst_cnt <= rst_cnt - 4'd1;
@@ -109,6 +122,19 @@ always @(posedge clk) begin
 				push_d = { hi, file_data };
 				hi_valid <= 1'b0;
 			end
+			case (file_addr)
+				32'h1B0: h_r <= file_data;
+				32'h1B1: h_a <= file_data;
+				32'h1B4: h_start[31:24] <= file_data;
+				32'h1B5: h_start[23:16] <= file_data;
+				32'h1B6: h_start[15:8] <= file_data;
+				32'h1B7: h_start[7:0] <= file_data;
+				32'h1B8: h_end[31:24] <= file_data;
+				32'h1B9: h_end[23:16] <= file_data;
+				32'h1BA: h_end[15:8] <= file_data;
+				32'h1BB: h_end[7:0] <= file_data;
+				default: ;
+			endcase
 			if (file_addr[31:2] == 30'h7C)     // 1F0..1F3
 				if (file_addr[1:0] != 2'd3)
 					reg_new <= reg_new | region_of(file_data);
@@ -122,6 +148,10 @@ always @(posedge clk) begin
 				hi_valid <= 1'b0;
 			end
 			hdr_region <= reg_new == 3'b000 ? 3'b010 : reg_new;
+			if (h_r != "R" || h_a != "A" || h_end < h_start)
+				sav_sectors <= 7'd0;
+			else
+				sav_sectors <= h_sec > 32'd64 ? 7'd64 : h_sec[6:0];
 		end
 
 		if (push) begin

@@ -18,6 +18,9 @@
 //   --expect-size     frame F is W x H active pixels
 //   --expect-audio    the audio is not silent
 //   --trace-cpu N     print the first N bus cycles of the 68000 after the boot (address, data)
+//   --expect-sav HEX,HEX,...  after the frames: the save RAM bytes 0, 1, ... read through the backup RAM
+//                     port (sega_bk, as kg_bk_ram does), then a byte written and read back through it, and
+//                     as many save RAM writes of the 68000 (sav_wr) as bytes given
 // Prints one line per frame (size, checksum) and "PASS" / "FAIL: ..." at the end; exit 1 on FAIL.
 
 #include "Vsim_top.h"
@@ -69,6 +72,7 @@ int main(int argc, char **argv) {
 	bool expect_audio = false;
 	std::vector<ExpPix> exp_pix;
 	std::vector<ExpSize> exp_size;
+	std::vector<unsigned> exp_sav;
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
 		auto next = [&]() -> const char * { if (i + 1 >= argc) { fprintf(stderr, "%s: value missing\n", a.c_str()); exit(2); } return argv[++i]; };
@@ -80,6 +84,7 @@ int main(int argc, char **argv) {
 		else if (a == "--sw") sw = strtoul(next(), 0, 16);
 		else if (a == "--expect-audio") expect_audio = true;
 		else if (a == "--trace-cpu") trace_cpu = atoi(next());
+		else if (a == "--expect-sav") { char *q = (char *)next(); for (char *t = strtok(q, ","); t; t = strtok(0, ",")) exp_sav.push_back(strtoul(t, 0, 16)); }
 		else if (a == "--expect-pixel") { ExpPix e; if (sscanf(next(), "%d,%d,%d,%x", &e.f, &e.x, &e.y, &e.rgb) != 4) return 2; exp_pix.push_back(e); }
 		else if (a == "--expect-size") { ExpSize e; if (sscanf(next(), "%d,%d,%d", &e.f, &e.w, &e.h) != 3) return 2; exp_size.push_back(e); }
 		else if (a[0] != '+') { fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
@@ -97,6 +102,7 @@ int main(int argc, char **argv) {
 	top->reset_n = 0; top->init_n = 0;
 	top->ext_reset_n = 1; top->ext_bootdone = 0; top->ext_data = 0; top->ext_data_ack = 0;
 	top->ext_sw = sw; top->pad_a = 0xff; top->pad_b = 0xff;
+	top->mem_req = 0; top->mem_we = 0; top->mem_addr = 0; top->mem_din = 0;
 
 	// power up: init_n (PLL lock) after a while, reset after the SDRAM init
 	for (int i = 0; i < 64; i++) mclk_cycle([] {});
@@ -149,6 +155,7 @@ int main(int argc, char **argv) {
 	uint64_t frame_limit = mclk_count + (uint64_t)(max_frame + 3) * 1100000;
 	uint32_t acc = 0;
 	bool done = false;
+	static int sav_writes = 0;
 	while (!done) {
 		mclk_cycle([&] {
 			// audio: 48 kHz from MCLK 54 MHz (accumulator)
@@ -168,6 +175,7 @@ int main(int argc, char **argv) {
 				trace_cpu--;
 			}
 			prev_dtack = top->cpu_dtack_n || top->cpu_as_n;
+			if (top->sav_wr) sav_writes++;
 			bool hbl = top->hbl, vbl = top->vbl;
 			if (top->ce_pix && !hbl && !vbl && started)
 				line.push_back((top->red << 8) | (top->green << 4) | top->blue);
@@ -208,6 +216,28 @@ int main(int argc, char **argv) {
 	if (wf) { fseek(wf, 0, SEEK_SET); wav_header(wf, wav_samples); fclose(wf); }
 
 	int fails = 0;
+	// the backup RAM port: one access as kg_bk_ram makes it (mem_req held until mem_ack)
+	auto bk = [&](bool we, unsigned addr, unsigned d) -> int {
+		top->mem_req = 1; top->mem_we = we; top->mem_addr = addr; top->mem_din = d;
+		for (int i = 0; i < 2000; i++) {
+			bool ack = false; int q = 0;
+			mclk_cycle([&] { if (top->mem_ack) { ack = true; q = top->mem_dout; top->mem_req = 0; } });
+			if (ack) return q;
+		}
+		top->mem_req = 0;
+		return -1;
+	};
+	if (!exp_sav.empty()) {
+		for (size_t i = 0; i < exp_sav.size(); i++) {
+			int q = bk(false, i, 0);
+			if (q != (int)exp_sav[i]) { printf("FAIL: save RAM byte %zu = %d, expected %02x\n", i, q, exp_sav[i]); fails++; }
+		}
+		bk(true, 100, 0x77);
+		int q = bk(false, 100, 0);
+		if (q != 0x77) { printf("FAIL: save RAM byte 100 written 77 through the backup port, read %d\n", q); fails++; }
+		if (sav_writes != (int)exp_sav.size()) { printf("FAIL: %d save RAM writes of the 68000, expected %zu\n", sav_writes, exp_sav.size()); fails++; }
+		printf("save RAM: %zu bytes checked, %d writes of the 68000\n", exp_sav.size(), sav_writes);
+	}
 	if (top->sdram_errors) { printf("FAIL: %u SDRAM protocol errors\n", top->sdram_errors); fails++; }
 	for (auto &e : exp_size)
 		if (kept_w[e.f] != e.w || kept_h[e.f] != e.h) { printf("FAIL: frame %d is %d x %d, expected %d x %d\n", e.f, kept_w[e.f], kept_h[e.f], e.w, e.h); fails++; }

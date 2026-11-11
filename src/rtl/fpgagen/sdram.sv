@@ -99,7 +99,16 @@ module sdram (
 	input             svp_rom_req,
 	output reg        svp_rom_ack,
 	input      [23:1] svp_rom_a,
-	output     [15:0] svp_rom_q
+	output     [15:0] svp_rom_q,
+
+	// karabas: the backup RAM port (kg_bk_ram: the .sav file): the save RAM of the cartridge (the
+	// region of the sram port), the low byte of a word, as the 68000 writes it; the lowest priority
+	input             bk_req,
+	output reg        bk_ack,
+	input             bk_we,
+	input      [15:1] bk_a,
+	input       [7:0] bk_d,
+	output reg [15:0] bk_q
 );
 
 localparam RASCAS_DELAY   = 3'd3;   // tRCD=20ns -> 3 cycles@108MHz
@@ -231,8 +240,9 @@ localparam PORT_SVP1   = 4'd6;
 localparam PORT_SVP2   = 4'd7;
 localparam PORT_SVPROM = 4'd8;
 localparam PORT_ROMWR  = 4'd9;
+localparam PORT_BK     = 4'd10;   // karabas
 
-reg        port_state[10];
+reg        port_state[11];   // karabas: + PORT_BK
 reg  [3:0] port[2];
 reg  [3:0] next_port[2];
 
@@ -289,6 +299,12 @@ always @(*) begin
 		addr_latch_next[0] = { 1'b0, svp_rom_a };
 		{ oe_next[0], we_next[0] } = 2'b10;
 		ds_next[0] = 2'b11;
+	end else if (bk_req ^ port_state[PORT_BK]) begin   // karabas
+		next_port[0] = PORT_BK;
+		addr_latch_next[0] = { 9'b101111111, bk_a };
+		{ oe_next[0], we_next[0] } = { ~bk_we, bk_we };
+		ds_next[0] = bk_we ? 2'b01 : 2'b11;
+		din_next[0] = { bk_d, bk_d };
 	end else begin
 		next_port[0] = PORT_NONE;
 		addr_latch_next[0] = addr_latch[0];
@@ -410,6 +426,7 @@ always @(posedge clk) begin
 					PORT_RAM68K: ram68k_ack <= ram68k_req;
 					PORT_SVP1:   svp_ram1_ack <= svp_ram1_req;
 					PORT_SVP2:   svp_ram2_ack <= svp_ram2_req;
+					PORT_BK:     bk_ack <= bk_req;   // karabas
 					default: ;
 				endcase
 			end
@@ -450,6 +467,7 @@ always @(posedge clk) begin
 				PORT_SVP1:   begin svp_ram1_q <= sd_din; svp_ram1_ack <= svp_ram1_req; end
 				PORT_SVP2:   begin svp_ram2_q <= sd_din; svp_ram2_ack <= svp_ram2_req; end
 				PORT_SVPROM: begin svp_rom_q  <= sd_din; svp_rom_ack <= svp_rom_req;   end
+				PORT_BK:     begin bk_q       <= sd_din; bk_ack <= bk_req;             end   // karabas
 				default: ;
 			endcase
 		end

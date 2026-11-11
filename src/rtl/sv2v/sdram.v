@@ -63,7 +63,13 @@ module sdram (
 	svp_rom_req,
 	svp_rom_ack,
 	svp_rom_a,
-	svp_rom_q
+	svp_rom_q,
+	bk_req,
+	bk_ack,
+	bk_we,
+	bk_a,
+	bk_d,
+	bk_q
 );
 	inout wire [15:0] SDRAM_DQ;
 	output reg [12:0] SDRAM_A;
@@ -130,6 +136,12 @@ module sdram (
 	output reg svp_rom_ack;
 	input [23:1] svp_rom_a;
 	output reg [15:0] svp_rom_q;
+	input bk_req;
+	output reg bk_ack;
+	input bk_we;
+	input [15:1] bk_a;
+	input [7:0] bk_d;
+	output reg [15:0] bk_q;
 	localparam RASCAS_DELAY = 3'd3;
 	localparam BURST_LENGTH = 3'b001;
 	localparam ACCESS_TYPE = 1'b0;
@@ -210,7 +222,8 @@ module sdram (
 	localparam PORT_SVP2 = 4'd7;
 	localparam PORT_SVPROM = 4'd8;
 	localparam PORT_ROMWR = 4'd9;
-	reg port_state [0:9];
+	localparam PORT_BK = 4'd10;
+	reg port_state [0:10];
 	reg [3:0] port [0:1];
 	reg [10:0] refresh_cnt;
 	wire need_refresh = refresh_cnt >= RFRSH_CYCLES;
@@ -268,6 +281,13 @@ module sdram (
 			addr_latch_next[0] = {1'b0, svp_rom_a};
 			{oe_next[0], we_next[0]} = 2'b10;
 			ds_next[0] = 2'b11;
+		end
+		else if (bk_req ^ port_state[PORT_BK]) begin
+			next_port[0] = PORT_BK;
+			addr_latch_next[0] = {9'b101111111, bk_a};
+			{oe_next[0], we_next[0]} = {~bk_we, bk_we};
+			ds_next[0] = (bk_we ? 2'b01 : 2'b11);
+			din_next[0] = {bk_d, bk_d};
 		end
 		else begin
 			next_port[0] = PORT_NONE;
@@ -369,6 +389,7 @@ module sdram (
 						PORT_RAM68K: ram68k_ack <= ram68k_req;
 						PORT_SVP1: svp_ram1_ack <= svp_ram1_req;
 						PORT_SVP2: svp_ram2_ack <= svp_ram2_req;
+						PORT_BK: bk_ack <= bk_req;
 						default:
 							;
 					endcase
@@ -422,6 +443,10 @@ module sdram (
 					PORT_SVPROM: begin
 						svp_rom_q <= sd_din;
 						svp_rom_ack <= svp_rom_req;
+					end
+					PORT_BK: begin
+						bk_q <= sd_din;
+						bk_ack <= bk_req;
 					end
 					default:
 						;
