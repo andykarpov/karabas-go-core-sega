@@ -7,7 +7,7 @@
     "dir": "sega",
     "filename": "",
     "extensions": ".bin,.gen,.md",
-    "order": 255,
+    "order": 25,
     "eeprom_bank": 255,
     "roms": [],
     "boards": {
