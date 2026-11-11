@@ -8,6 +8,7 @@
 #     into the cartridge)
 #   - the PSG tone is on the audio output (the Z80 reset released, jt89 + jt12_genmix)
 #   - no SDRAM protocol error (sdram_model.v)
+# and the line scroll ROM (mkrom.py --linescroll, check_linescroll.py): each line at its own offset
 set -e -o pipefail
 cd "$(dirname "$0")"
 mkdir -p build
@@ -28,3 +29,7 @@ sim/build/obj/Vsim_top --rom sim/build/test.bin --frames 3 --ppm sim/build/check
 	--expect-pixel 2,100,10,e00 --expect-pixel 2,100,60,0e0 --expect-pixel 2,100,120,00e \
 	--expect-pixel 2,100,200,eee --expect-pixel 2,0,0,e00 --expect-pixel 2,319,223,eee \
 	--expect-audio | grep -vE '^\[[0-9]+\] MRST'
+# the line scroll (HSCROLL mode 3, one entry per line): every line of frame 2 shifted by its own value
+python3 -I sim/mkrom.py sim/build/ls.bin --linescroll
+sim/build/obj/Vsim_top --rom sim/build/ls.bin --frames 3 --ppm sim/build/ls | grep -E '^(FAIL|PASS)'
+python3 -I sim/check_linescroll.py sim/build/ls_002.ppm
