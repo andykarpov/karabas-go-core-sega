@@ -172,7 +172,7 @@ reg [3:0] t;
 
 always @(posedge clk) begin
 	t <= t + 1'd1;
-	if (t == 4'd4 && !oe_latch[1] && !we_latch[1] && next_port[0] == PORT_NONE && !refresh && !init) t <= STATE_RAS0;
+	if (t == 4'd4 && !oe_latch[1] && !we_latch[1] && n0_port == PORT_NONE && !refresh && !init) t <= STATE_RAS0;   // karabas: n0_port
 	if (t == STATE_LAST) t <= STATE_RAS0;
 end
 
@@ -313,6 +313,24 @@ always @(*) begin
 	end
 end
 
+// karabas: the candidate of bank 0-2 registered on every clock (n0_*), as that of bank 3 below: on Go
+// the path from the request toggles (romwr_req, sram_req, port_state) through this priority chain and the
+// SDRAM_A mux into the IOB did not fit 108 MHz (-0.77 ns, build of F4). RAS1 (t 4) takes the candidate of
+// t 3: refresh is set at t 0, and RAS1 comes again 5 or 9 clocks later, so the clock after the port_state
+// toggle (still showing the request) is never used.
+reg  [3:0] n0_port;
+reg [24:1] n0_addr;
+reg        n0_oe, n0_we;
+reg  [1:0] n0_ds;
+reg [15:0] n0_din;
+always @(posedge clk) begin
+	n0_port <= next_port[0];
+	n0_addr <= addr_latch_next[0];
+	{ n0_oe, n0_we } <= { oe_next[0], we_next[0] };
+	n0_ds <= ds_next[0];
+	n0_din <= din_next[0];
+end
+
 // VRAM only: bank 3
 // karabas: the candidate of bank 3 is registered on every clock (vn_*): on the Spartan-6 the path from
 // the VDP (its select registers and vram32_ack, through the combinational vram32_a) into SDRAM_A did
@@ -375,16 +393,16 @@ always @(posedge clk) begin
 		// RAS phase
 		// bank 0,1,2
 		if(t == STATE_RAS1) begin
-			port[0] <= next_port[0];
-			addr_latch[0] <= addr_latch_next[0];
-			{ oe_latch[0], we_latch[0] } <= { oe_next[0], we_next[0] };
-			ds[0] <= ds_next[0];
-			din_latch[0] <= din_next[0];
-			if (next_port[0] != PORT_NONE) begin
-				port_state[next_port[0]] <= ~port_state[next_port[0]];
+			port[0] <= n0_port;                         // karabas: the registered candidate
+			addr_latch[0] <= n0_addr;
+			{ oe_latch[0], we_latch[0] } <= { n0_oe, n0_we };
+			ds[0] <= n0_ds;
+			din_latch[0] <= n0_din;
+			if (n0_port != PORT_NONE) begin
+				port_state[n0_port] <= ~port_state[n0_port];
 //				sd_cmd <= CMD_ACTIVE;
-				SDRAM_A <= addr_latch_next[0][22:10];
-				SDRAM_BA <= addr_latch_next[0][24:23];
+				SDRAM_A <= n0_addr[22:10];
+				SDRAM_BA <= n0_addr[24:23];
 			end
 		end
 

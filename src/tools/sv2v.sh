@@ -43,3 +43,5 @@ HDMI="zhdmi_tmds_encoder zhdmi_signaling zhdmi_island_encoder zhdmi_audio_packet
   echo 'vhdl work "rtl/fpgagen/gen_ctrl.vhd"'
   for f in karabas/sega_loader.v karabas/sega_fb.v karabas/sega_bk.v karabas/sega_kbd.v karabas_minig_top.v; do echo "verilog work \"rtl/$f\""; done
 } > ../karabas_minig.prj
+# the Go and Mini tops, ucf timing parts, prj / xst / ut from the Mini G ones
+python3 "$(dirname "$0")/mktops.py"

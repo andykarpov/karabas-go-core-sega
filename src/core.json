@@ -1,7 +1,7 @@
 {
     "id": "sega",
     "name": "Sega Mega Drive",
-    "build": "26111102",
+    "build": "26111201",
     "visible": true,
     "type": "fileloader",
     "dir": "sega",

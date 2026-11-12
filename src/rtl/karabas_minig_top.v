@@ -678,12 +678,20 @@ end
 wire dvi_only_65;
 kg_sync #(.W(1), .STAGES(3)) sync_dvi (.clk(clk_65), .d(dvi_only), .q(dvi_only_65));
 
-// osd_rgb is one clock behind the syncs of the overlay's input: the syncs and de go with it
+// osd_rgb is one clock behind the syncs of the overlay's input; it is registered once more before the
+// TMDS encoders (on Mini, 99 % slices, the overlay mux into the encoders did not fit 65 MHz: -2.7 ns),
+// so the syncs and de go two clocks behind
+reg hs_d = 1'b1, vs_d = 1'b1, de_d = 1'b0;
 reg hdmi_hs = 1'b1, hdmi_vs = 1'b1, hdmi_de = 1'b0;
+reg [23:0] hdmi_rgb = 24'd0;
 always @(posedge clk_65) begin
-	hdmi_hs <= ~vid_hs;   // 1024 x 768 at 60 Hz: negative syncs (VESA)
-	hdmi_vs <= ~vid_vs;
-	hdmi_de <= vid_de;
+	hs_d <= ~vid_hs;   // 1024 x 768 at 60 Hz: negative syncs (VESA)
+	vs_d <= ~vid_vs;
+	de_d <= vid_de;
+	hdmi_hs <= hs_d;
+	hdmi_vs <= vs_d;
+	hdmi_de <= de_d;
+	hdmi_rgb <= osd_rgb;
 end
 
 hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
@@ -691,7 +699,7 @@ hdmi_tx #(.SAMPLE_FREQ(48000)) hdmi (
 	.sclk(clk_ser),
 	.sclk_n(clk_ser_n),
 	.reset(areset),
-	.rgb(osd_rgb),
+	.rgb(hdmi_rgb),
 	.vsync(hdmi_vs),
 	.hsync(hdmi_hs),
 	.de(hdmi_de),
