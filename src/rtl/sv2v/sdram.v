@@ -165,13 +165,13 @@ module sdram (
 	reg [3:0] t;
 	localparam PORT_NONE = 4'd0;
 	reg init = 1'b1;
-	reg [3:0] next_port [0:1];
+	reg [3:0] n0_port;
 	reg [1:0] oe_latch;
 	reg refresh;
 	reg [1:0] we_latch;
 	always @(posedge clk) begin
 		t <= t + 1'd1;
-		if ((((((t == 4'd4) && !oe_latch[1]) && !we_latch[1]) && (next_port[0] == PORT_NONE)) && !refresh) && !init)
+		if ((((((t == 4'd4) && !oe_latch[1]) && !we_latch[1]) && (n0_port == PORT_NONE)) && !refresh) && !init)
 			t <= STATE_RAS0;
 		if (t == STATE_LAST)
 			t <= STATE_RAS0;
@@ -225,6 +225,7 @@ module sdram (
 	localparam PORT_BK = 4'd10;
 	reg port_state [0:10];
 	reg [3:0] port [0:1];
+	reg [3:0] next_port [0:1];
 	reg [10:0] refresh_cnt;
 	wire need_refresh = refresh_cnt >= RFRSH_CYCLES;
 	always @(*) begin
@@ -296,6 +297,18 @@ module sdram (
 			ds_next[0] = 0;
 		end
 	end
+	reg [24:1] n0_addr;
+	reg n0_oe;
+	reg n0_we;
+	reg [1:0] n0_ds;
+	reg [15:0] n0_din;
+	always @(posedge clk) begin
+		n0_port <= next_port[0];
+		n0_addr <= addr_latch_next[0];
+		{n0_oe, n0_we} <= {oe_next[0], we_next[0]};
+		n0_ds <= ds_next[0];
+		n0_din <= din_next[0];
+	end
 	reg [3:0] vn_port;
 	reg [24:1] vn_addr;
 	reg vn_oe;
@@ -346,15 +359,15 @@ module sdram (
 		end
 		else begin
 			if (t == STATE_RAS1) begin
-				port[0] <= next_port[0];
-				addr_latch[0] <= addr_latch_next[0];
-				{oe_latch[0], we_latch[0]} <= {oe_next[0], we_next[0]};
-				ds[0] <= ds_next[0];
-				din_latch[0] <= din_next[0];
-				if (next_port[0] != PORT_NONE) begin
-					port_state[next_port[0]] <= ~port_state[next_port[0]];
-					SDRAM_A <= addr_latch_next[0][22:10];
-					SDRAM_BA <= addr_latch_next[0][24:23];
+				port[0] <= n0_port;
+				addr_latch[0] <= n0_addr;
+				{oe_latch[0], we_latch[0]} <= {n0_oe, n0_we};
+				ds[0] <= n0_ds;
+				din_latch[0] <= n0_din;
+				if (n0_port != PORT_NONE) begin
+					port_state[n0_port] <= ~port_state[n0_port];
+					SDRAM_A <= n0_addr[22:10];
+					SDRAM_BA <= n0_addr[24:23];
 				end
 			end
 			if ((t == (STATE_RAS1 + 1)) && (port[0] != PORT_NONE))
