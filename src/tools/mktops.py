@@ -115,7 +115,7 @@ MINI_PORTS = "module karabas_mini_top (\n" + COMMON_PORTS_HEAD + """
 	input wire MCU_SCK,
 	inout wire MCU_MOSI,
 	output wire MCU_MISO,
-	inout wire [3:0] MCU_IO, // [0] burst cs_n, [1] burst ready, [2] sd2 cs_n, [3] ft cs_n
+	inout wire [3:0] MCU_IO, // [1] INT of link v2, [2] sd2 cs_n, [3] ft cs_n
 
 	output wire MIDI_TX,
 
@@ -174,7 +174,7 @@ GO_PORTS = "module karabas_go_top (\n" + COMMON_PORTS_HEAD + """
 	output wire MCU_MISO,
 	input wire MCU_SPI_FT_CS_N,
 	input wire MCU_SPI_SD2_CS_N,
-	inout wire [1:0] MCU_SPI_IO, // [0] burst ready (firmware IO1, GPIO2), [1] burst cs_n (IO0, GPIO14)
+	inout wire [1:0] MCU_SPI_IO, // [0] INT of link v2 (firmware IO1, GPIO2), [1] unused (IO0, GPIO14)
 
 	output wire MIDI_TX,
 	output wire MIDI_CLK,
@@ -221,8 +221,6 @@ def common(s):
     s = sub(s, "assign ESP32_SPI_CS_N = 1'b1;\n", "", "ESP32_SPI_CS_N")
     s = sub(s, "assign MIDI_TX = 1'b1;\n", "assign MIDI_TX = 1'b1;\n" + UNUSED_SYNTH, "unused")
     s = sub(s, MCU_SCK_G, MCU_SCK_OLD, "MCU_SCK")
-    s = sub(s, "	.BURST_MAX_MHZ(32),  // Rev.G has MCU_SCK on a global clock pin\n",
-            "	.BURST_MAX_MHZ(0),   // MCU_SCK is not on a clock pin: bursts at the link clock\n", "burst")
     return s
 
 
@@ -236,7 +234,7 @@ def mini(s):
     s = ports(s, MINI_PORTS)
     s = common(s)
     s = sub(s, "assign MIDI_RESET_N = 1'b0;\n", "assign MIDI_RESET_N = 1'b0;\nassign FT_RESET = 1'b1;\n", "FT_RESET")
-    s = sub(s, "assign MCU_IO[5:2] = 4'bzzzz;\n", "assign MCU_IO[3:2] = 2'bzz;\n", "MCU_IO")
+    s = sub(s, "assign MCU_IO[5:2] = 4'bzzzz;\n", "assign MCU_IO[3:2] = 2'bzz;\n", "MCU_IO")  # INT on MCU_IO[1]
     a = s.index(PCM_FROM)
     b = s.index(PCM_TO, a) + len(PCM_TO)
     s = s[:a] + ("// no I2S DAC on this board: sigma-delta outputs into an RC filter, offset binary input\n"
@@ -266,11 +264,11 @@ def go(s):
             "// the pixel clock of the VGA DAC\n"
             "ODDR2 oddr_v_clk (.Q(V_CLK), .C0(clk_65), .C1(~clk_65), .CE(1'b1), .D0(1'b1), .D1(1'b0), .R(1'b0), .S(1'b0));\n",
             "V_CLK")
-    s = sub(s, "assign MCU_IO[1] = mcu_burst_ready;\nassign MCU_IO[0] = 1'bz;\nassign MCU_IO[5:2] = 4'bzzzz;\n",
-            "assign MCU_SPI_IO[0] = mcu_burst_ready;\nassign MCU_SPI_IO[1] = 1'bz;\n", "MCU_IO")
-    s = sub(s, "	.MCU_SPI_FT_SS(MCU_IO[3]),\n	.MCU_SPI_SD2_SS(MCU_IO[2]),\n	.MCU_BURST_CS_N(MCU_IO[0]),\n",
-            "	.MCU_SPI_FT_SS(MCU_SPI_FT_CS_N),\n	.MCU_SPI_SD2_SS(MCU_SPI_SD2_CS_N),\n	.MCU_BURST_CS_N(MCU_SPI_IO[1]),\n",
-            "MCU SS")
+    s = sub(s, "assign MCU_IO[1] = mcu_int;\nassign MCU_IO[0] = 1'bz;\nassign MCU_IO[5:2] = 4'bzzzz;\n",
+            "// INT of link v2 on MCU_SPI_IO[0] (N9, the IO1 line of the firmware)\n"
+            "assign MCU_SPI_IO[0] = mcu_int;\nassign MCU_SPI_IO[1] = 1'bz;\n", "MCU_IO")
+    s = sub(s, "	.MCU_SPI_FT_SS(MCU_IO[3]),\n	.MCU_SPI_SD2_SS(MCU_IO[2]),\n",
+            "	.MCU_SPI_FT_SS(MCU_SPI_FT_CS_N),\n	.MCU_SPI_SD2_SS(MCU_SPI_SD2_CS_N),\n", "MCU SS")
     s = sub(s, PCM_LRCK, "	.lrck(DAC_LRCK)\n", "DAC_LRCK")
     s = sub(s, "   pll_clk<0> 65.0 MHz (/10): the video out (1024 x 768 at 60 Hz), the OSD, HDMI; FT_CLK_OUT 8.125 MHz\n"
                "              (/8 of it, karabas-go-notes ft-clk-out-required)\n"
