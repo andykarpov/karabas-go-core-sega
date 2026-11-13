@@ -112,7 +112,7 @@ module karabas_go_top (
 	output wire MCU_MISO,
 	input wire MCU_SPI_FT_CS_N,
 	input wire MCU_SPI_SD2_CS_N,
-	inout wire [1:0] MCU_SPI_IO, // [0] burst ready (firmware IO1, GPIO2), [1] burst cs_n (IO0, GPIO14)
+	inout wire [1:0] MCU_SPI_IO, // [0] INT of link v2 (firmware IO1, GPIO2), [1] unused (IO0, GPIO14)
 
 	output wire MIDI_TX,
 	output wire MIDI_CLK,
@@ -201,148 +201,98 @@ ODDR2 oddr_v_clk (.Q(V_CLK), .C0(clk_65), .C1(~clk_65), .CE(1'b1), .D0(1'b1), .D
 // MCU_SCK is not on a clock pin before rev.G (CLOCK_DEDICATED_ROUTE = FALSE in the ucf)
 wire mcu_sck = MCU_SCK, mcu_sck_ibufg = MCU_SCK;
 
-wire mcu_burst_ready;
-assign MCU_SPI_IO[0] = mcu_burst_ready;
+// MCU link v2 (karabas-go-firmware docs/link_v2.md, kg_mcu2); INT on IO1
+wire mcu_int;
+// INT of link v2 on MCU_SPI_IO[0] (N9, the IO1 line of the firmware)
+assign MCU_SPI_IO[0] = mcu_int;
 assign MCU_SPI_IO[1] = 1'bz;
 
-wire [7:0] kb_status, kb_dat0, kb_dat1, kb_dat2, kb_dat3, kb_dat4, kb_dat5;
-wire [12:0] joy_l, joy_r;
-wire file_active, file_wr;
-wire [7:0] file_data;
-wire [31:0] file_addr;
-wire [15:0] softsw_command, osd_command;
+wire [55:0] hid_kbd;
+wire [7:0] kb_dat0 = hid_kbd[15:8], kb_dat1 = hid_kbd[23:16], kb_dat2 = hid_kbd[31:24],
+	kb_dat3 = hid_kbd[39:32], kb_dat4 = hid_kbd[47:40], kb_dat5 = hid_kbd[55:48];
+wire [15:0] joy_l16, joy_r16;
+wire [12:0] joy_l = joy_l16[12:0], joy_r = joy_r16[12:0];
+wire [1:0] ld_kind;
+wire [7:0] ld_data;
+wire [31:0] ld_addr;
+wire ld_active, ld_wr;
 wire mcu_busy;
 wire dvi_only;
 wire ft_cs_n, ft_mosi, ft_spi_on, sd2_cs_n, sd2_mosi;
-wire [7:0] img_mounted, img_data, img_result, img_flush;
-wire [63:0] img_size;
-wire img_data_wr, img_result_wr, img_q_wr, img_q_ack;
-wire [8:0] img_data_addr;
-wire [15:0] img_sum;
-wire [23:0] img_q_di;
+wire [5*8-1:0] sw;
+wire osd_wr, osd_en, osd_zoom;
+wire [11:0] osd_waddr;
+wire [7:0] osd_wdata;
+wire [23:0] osd_fg, osd_bg;
+wire [1:0] osd_alpha, osd_place;
+wire [4:0] osd_px, osd_ph;
+wire [3:0] osd_py;
+wire [5:0] osd_pw;
+// the .sav file of kg_bk_ram (slot 0) on the mounter of kg_mcu2
+wire [7:0] img_flush, sdc_img_mounted, sdc_rd, sdc_wr, sdc_byte_in_data, sdc_byte_out_data;
+wire [63:0] sdc_img_size;
+wire [31:0] sdc_sector, bk_size;
+wire sdc_busy, sdc_done, sdc_error, sdc_byte_in_strobe;
+wire [2:0] sdc_slot;
+wire [8:0] sdc_byte_addr;
+wire bk_mount, bk_flushed;
+wire [7:0] bk_kind, bk_result;
 
-kg_mcu #(
-	.BURST_MAX_MHZ(0),   // MCU_SCK is not on a clock pin: bursts at the link clock
+kg_mcu2 #(
+	.CAPS(16'h0002),     // backup RAM: the firmware flushes the .sav before a new game
+	.SW_N(5),
 	.CS_FILTER(3),
-	.ENABLE_RTC(0),
-	.ENABLE_UART(0),
-	.ENABLE_MATRIX(0),
-	.ENABLE_DEBUG(0),
+	.ENABLE_OSD(1),
 	.ENABLE_IMG(1),      // the file mounter: the .sav file of kg_bk_ram
-	.ENABLE_IMG_WP(0),
-	.ENABLE_BK(1),       // kg_bk_ram: the save RAM of the cartridge (caps bit 3: flushes before a new game)
-	.ENABLE_MIDI(0),
-	.ENABLE_FILE(1),     // the cartridge (the file of the fileloader core)
-	.FILE_CMDS(1),       // FILELOADER / FILEBANK / FILEDATA, as snes / nes
-	.FILE_WR_EACH(1),    // every byte (a new load starts at 0 again)
-	.FILE_TO_ROM(0),
+	.IMG_OUT_LATENCY(2), // the sector buffer of kg_bk_ram
 	.ENABLE_FT(1),
 	.ENABLE_SD2(1)
 ) mcu (
 	.CLK(mclk),
 	.N_RESET(~areset),
 
+	.MCU_SCK(mcu_sck),
 	.MCU_MOSI(MCU_MOSI),
 	.MCU_MISO(MCU_MISO),
-	.MCU_SCK(mcu_sck),
 	.MCU_SS(MCU_CS_N),
+	.MCU_INT(mcu_int),
 	.MCU_SPI_FT_SS(MCU_SPI_FT_CS_N),
 	.MCU_SPI_SD2_SS(MCU_SPI_SD2_CS_N),
-	.MCU_BURST_CS_N(MCU_SPI_IO[1]),
-	.MCU_BURST_READY(mcu_burst_ready),
 
-	.KB_STATUS(kb_status),
-	.KB_DAT0(kb_dat0),
-	.KB_DAT1(kb_dat1),
-	.KB_DAT2(kb_dat2),
-	.KB_DAT3(kb_dat3),
-	.KB_DAT4(kb_dat4),
-	.KB_DAT5(kb_dat5),
-	.KB_SCANCODE(),
-	.KB_SCANCODE_UPD(),
-	.JOY_L(joy_l),
-	.JOY_R(joy_r),
-	.MS_X(),
-	.MS_Y(),
-	.MS_Z(),
-	.MS_B(),
-	.MS_UPD(),
+	.SW(sw), .SW_WR(), .SW_INDEX(), .SW_VALUE(), .HW_ID(), .DVI_ONLY(dvi_only), .CORE_BUILD(), .FW_BUILD(),
+	.BUSY(mcu_busy), .BTNS(), .RELOAD_REQ(1'b0), .RELOAD_CORE(8'd0),
 
-	.ROMLOADER_ACTIVE(),
-	.ROMLOAD_ADDR(),
-	.ROMLOAD_DATA(),
-	.ROMLOAD_WR(),
+	.KBD(hid_kbd), .KBD_WR(), .PS2_CODE(), .PS2_KIND(), .PS2_WR(),
+	.MS_X(), .MS_Y(), .MS_Z(), .MS_B(), .MS_WR(),
+	.JOY_L(joy_l16), .JOY_R(joy_r16), .JOY_WR(),
+	.PS2_CMD(16'h0000), .PS2_CMD_WR(1'b0),
 
-	.FILELOAD_RESET(),
-	.FILELOAD_ACTIVE(file_active),
-	.FILELOAD_SIZE(),
-	.FILELOAD_ADDR(file_addr),
-	.FILELOAD_DATA(file_data),
-	.FILELOAD_WR(file_wr),
-	.FILELOAD_SLOT(),
+	.LD_KIND(ld_kind), .LD_SLOT(), .LD_SIZE(), .LD_START(), .LD_ACTIVE(ld_active), .LD_END(),
+	.LD_ADDR(ld_addr), .LD_DATA(ld_data), .LD_WR(ld_wr), .LD_READY(1'b1),
 
-	.SOFTSW_COMMAND(softsw_command),
-	.OSD_COMMAND(osd_command),
-	.BUSY(mcu_busy),
+	.OSD_WR(osd_wr), .OSD_WADDR(osd_waddr), .OSD_WDATA(osd_wdata), .OSD_EN(osd_en),
+	.OSD_FG(osd_fg), .OSD_BG(osd_bg), .OSD_ALPHA(osd_alpha), .OSD_PX(osd_px), .OSD_PY(osd_py),
+	.OSD_PW(osd_pw), .OSD_PH(osd_ph), .OSD_PLACE(osd_place), .OSD_ZOOM(osd_zoom),
 
-	.FT_SPI_ON(ft_spi_on),
+	.SDC_IMG_MOUNTED(sdc_img_mounted), .SDC_IMG_SIZE(sdc_img_size),
+	.SDC_RD(sdc_rd), .SDC_WR(sdc_wr), .SDC_SECTOR(sdc_sector),
+	.SDC_BUSY(sdc_busy), .SDC_DONE(sdc_done), .SDC_ERROR(sdc_error), .SDC_SLOT(sdc_slot),
+	.SDC_BYTE_IN_STROBE(sdc_byte_in_strobe), .SDC_BYTE_ADDR(sdc_byte_addr),
+	.SDC_BYTE_IN_DATA(sdc_byte_in_data), .SDC_BYTE_OUT_DATA(sdc_byte_out_data),
+	.IMG_WP(), .IMG_PHYS_WR(), .IMG_PHYS(), .IMG_FLUSH(img_flush), .FDD_CHNG_WR(), .FDD_CHNG(),
+	.FDD_CHNG_REQ(1'b0), .FDD_CHNG_DS(2'd0),
+	.BK_MOUNT(bk_mount), .BK_FLUSHED(bk_flushed), .BK_SLOT(3'd0), .BK_SIZE(bk_size),
+	.BK_KIND(bk_kind), .BK_RESULT(bk_result),
+	.IMG_ACTIVE(),
+
+	.PORT_OUT_DATA(), .PORT_OUT_WR(), .PORT_OUT_READY(4'b1111), .PORT_IN_DATA(32'd0), .PORT_IN_WR(4'd0),
+	.PORT_CFG(128'd0), .PORT_IN_FULL(), .PORT_STAT(), .PORT_STAT_WR(),
+	.RTC_A(8'd0), .RTC_DI(8'd0), .RTC_CS(1'b0), .RTC_WR_N(1'b1), .RTC_DO(),
+	.MATRIX_CMD(24'd0), .MATRIX_CMD_WR(1'b0), .DEBUG_ADDR(16'd0), .DEBUG_DATA(16'd0),
+
+	.FT_SPI_ON(ft_spi_on), .FT_VGA_ON(), .FT_RESET(), .FT_SCK(), .FT_MOSI(ft_mosi), .FT_MISO(FT_SPI_MISO),
 	.FT_CS_N(ft_cs_n),
-	.FT_MOSI(ft_mosi),
-	.FT_MISO(FT_SPI_MISO),
-	.FT_SCK(),
-	.SD2_CS_N(sd2_cs_n),
-	.SD2_MOSI(sd2_mosi),
-	.SD2_MISO(SD_DO),
-	.SD2_SCK(),
-
-	.DVI_ONLY(dvi_only),
-
-	.MIDI_DATA(),
-	.MIDI_WR(),
-	.MIDI_LOST(),
-
-	// not used by this core
-	.PS2_COMMAND(16'h0000),
-	.PS2_COMMAND_WR(1'b0),
-	.RTC_A(8'h00),
-	.RTC_DI(8'h00),
-	.RTC_DO(),
-	.RTC_CS(1'b0),
-	.RTC_WR_N(1'b1),
-	.UART_RX_DATA(),
-	.UART_RX_IDX(),
-	.UART_TX_DATA(8'h00),
-	.UART_TX_WR(1'b0),
-	.UART_TX_MODE(1'b0),
-	.UART_DLM(8'h00),
-	.UART_DLL(8'h00),
-	.UART_DLM_WR(1'b0),
-	.UART_DLL_WR(1'b0),
-	.MATRIX_CMD(24'h000000),
-	.MATRIX_CMD_WR(1'b0),
-	.DEBUG_ADDR(16'h0000),
-	.DEBUG_DATA(16'h0000),
-	.IMG_MOUNTED(img_mounted),
-	.IMG_SIZE(img_size),
-	.IMG_WP(),
-	.IMG_DATA_WR(img_data_wr),
-	.IMG_DATA_ADDR(img_data_addr),
-	.IMG_DATA(img_data),
-	.IMG_RESULT_WR(img_result_wr),
-	.IMG_RESULT(img_result),
-	.IMG_SUM(img_sum),
-	.IMG_FLUSH(img_flush),
-	.IMG_Q_WR(img_q_wr),
-	.IMG_Q_DI(img_q_di),
-	.IMG_Q_ACK(img_q_ack),
-	.FDD_CHNG_REQ(1'b0),
-	.FDD_CHNG_DS(2'd0),
-	.PRN_DATA(8'h00),
-	.PRN_WR(1'b0),
-	.ESP_UART_RX_DATA(8'h00),
-	.ESP_UART_RX_WR(1'b0),
-	.FLASHBOOT_START(1'b0),
-	.FLASHBOOT_COREID(5'd0)
+	.SD2_SCK(), .SD2_MOSI(sd2_mosi), .SD2_MISO(SD_DO), .SD2_CS_N(sd2_cs_n)
 );
 
 assign FT_SPI_CS_N = ft_spi_on ? ft_cs_n : 1'b1;
@@ -352,15 +302,14 @@ assign SD_CS_N = sd2_cs_n;
 assign SD_DI = sd2_mosi;
 assign SD_CLK = mcu_sck_ibufg;
 
-// ------------------------------------------------------------------ soft switches
+// the cartridge: the file loader (LD kind 1)
+wire file_active = ld_active && ld_kind == 2'd1;
+wire file_wr = ld_wr && ld_kind == 2'd1;
+wire [31:0] file_addr = ld_addr;
+wire [7:0] file_data = ld_data;
 
-wire [5*8-1:0] sw;
-kg_soft_switches #(.N(5)) soft_switches (
-	.clk(mclk),
-	.command(softsw_command),
-	.regs(sw),
-	.upd()
-);
+// ------------------------------------------------------------------ soft switches (the SW registers of kg_mcu2)
+
 wire [1:0] sw_region = sw[0*8 +: 2];   // 0 Auto, 1 JP, 2 US, 3 EU
 wire sw_3button = sw[1*8];
 wire sw_swap = sw[2*8];
@@ -430,7 +379,8 @@ kg_bk_ram #(
 	.MAX_CLOCKS(27'd108000000),    // ~2 s: at the latest after the first write
 	.MOUNT_CLOCKS(27'd54000000),   // ~1 s: no answer to CMD_BK_MOUNT, go on without a save
 	.GRACE_CLOCKS(27'd540000),     // ~10 ms: no file
-	.TIMEOUT(24'd10800000)         // img_sdc: ~200 ms
+	.TIMEOUT(24'd10800000),        // img_sdc: ~200 ms (LINK 1)
+	.LINK(2)                       // on the mounter of kg_mcu2, the mount / flush answer as IMG events
 ) bk_ram (
 	.clk(mclk),
 	.reset(bk_reset),
@@ -449,18 +399,25 @@ kg_bk_ram #(
 	.mem_din(bk_mem_din),
 	.mem_ack(bk_mem_ack),
 	.mem_dout(bk_mem_dout),
-	.img_mounted(img_mounted),
-	.img_size(img_size),
-	.img_data_wr(img_data_wr),
-	.img_data_addr(img_data_addr),
-	.img_data(img_data),
-	.img_result_wr(img_result_wr),
-	.img_result(img_result),
-	.img_sum(img_sum),
+	.img_mounted(8'd0),
+	.img_size(64'd0),
+	.img_data_wr(1'b0),
+	.img_data_addr(9'd0),
+	.img_data(8'd0),
+	.img_result_wr(1'b0),
+	.img_result(8'd0),
+	.img_sum(16'd0),
 	.img_flush(img_flush),
-	.img_q_wr(img_q_wr),
-	.img_q_di(img_q_di),
-	.img_q_ack(img_q_ack)
+	.img_q_wr(),
+	.img_q_di(),
+	.img_q_ack(1'b0),
+	.sdc_img_mounted_i(sdc_img_mounted), .sdc_img_size_i(sdc_img_size), .sdc_rd_o(sdc_rd),
+	.sdc_wr_o(sdc_wr), .sdc_sector_o(sdc_sector), .sdc_busy_i(sdc_busy), .sdc_done_i(sdc_done),
+	.sdc_error_i(sdc_error), .sdc_slot_i(sdc_slot), .sdc_byte_in_strobe_i(sdc_byte_in_strobe),
+	.sdc_byte_addr_i(sdc_byte_addr), .sdc_byte_in_data_i(sdc_byte_in_data),
+	.sdc_byte_out_data_o(sdc_byte_out_data),
+	.bk_mount(bk_mount), .bk_flushed(bk_flushed), .bk_size(bk_size), .bk_kind(bk_kind),
+	.bk_result(bk_result)
 );
 
 wire bk_req, bk_ack, bk_we;
@@ -621,26 +578,19 @@ sega_fb fb (
 	.de(vid_de)
 );
 
-// osd_command into clk_65: taken when two samples agree (it holds for many clocks)
-reg [15:0] osd_s1 = 16'd0, osd_s2 = 16'd0, osd_cmd = 16'd0;
-always @(posedge clk_65) begin
-	osd_s1 <= osd_command;
-	osd_s2 <= osd_s1;
-	if (osd_s1 == osd_s2)
-		osd_cmd <= osd_s2;
-end
-
-// as core-macplus / core-bk: 1024 x 768, the counters start at the leading edge of the syncs
+// the bitmap OSD of link v2 (kg_l2_osd_overlay): written in mclk, drawn in clk_65, centred in de, the
+// scale from its size, 2 clocks of latency with its syncs and de
 wire [23:0] osd_rgb;
-kg_osd_overlay #(.H_OFFSET(276), .V_OFFSET(105), .H_DIV4_WIDTH(1400), .V_DIV4_HEIGHT(900)) osd (
+wire osd_hs, osd_vs, osd_de;
+kg_l2_osd_overlay osd (
+	.wclk(mclk),
+	.osd_wr(osd_wr), .osd_waddr(osd_waddr), .osd_wdata(osd_wdata), .osd_en(osd_en),
+	.osd_fg(osd_fg), .osd_bg(osd_bg), .osd_alpha(osd_alpha), .osd_px(osd_px), .osd_py(osd_py),
+	.osd_pw(osd_pw), .osd_ph(osd_ph), .osd_place(osd_place), .osd_zoom(osd_zoom),
+	.icon_on(8'd0), .icon_act(8'd0),
 	.clk(clk_65),
-	.rgb_i(vid_rgb),
-	.rgb_o(osd_rgb),
-	.hsync_i(vid_hs),
-	.vsync_i(vid_vs),
-	.v_offset(11'd0),
-	.h_offset(11'd0),
-	.osd_command(osd_cmd)
+	.rgb_i(vid_rgb), .hs_i(vid_hs), .vs_i(vid_vs), .de_i(vid_de),
+	.rgb_o(osd_rgb), .hs_o(osd_hs), .vs_o(osd_vs), .de_o(osd_de)
 );
 
 // ------------------------------------------------------------------ audio

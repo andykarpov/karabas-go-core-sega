@@ -11,8 +11,8 @@
     "eeprom_bank": 255,
     "roms": [],
     "boards": {
-        "go": {"bitstream": "karabas_go.bin"},
-        "mini": {"bitstream": "karabas_mini.bin"},
+        "go": {"link": 2, "build": "26111330", "bitstream": "karabas_go.bin"},
+        "mini": {"link": 2, "build": "26111330", "bitstream": "karabas_mini.bin"},
         "minig": {"link": 2, "build": "26111316", "bitstream": "karabas_minig.bin"}
     },
     "osd": [

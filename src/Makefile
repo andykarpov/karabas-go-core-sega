@@ -30,7 +30,7 @@ JSON = core.json
 
 # map / par options (cost table 2 by default, the rule of all the cores)
 MAP_T_go ?= 2
-MAP_T_mini ?= 2
+MAP_T_mini ?= 3  # link v2 (26111330): -t 2 missed the PLL clocks by 2..3 ns (99 % slices)
 MAP_T_minig ?= 3  # link v2 (26111316): -t 2 missed clk_65 and the HDMI serializer
 MAP = -logic_opt off -ol high -xe n -xt 3 -register_duplication off -r 4 -global_opt off -mt 2 -detail -ir off -pr b -lc auto -power off
 PAR = -ol high -xe c -mt 4
